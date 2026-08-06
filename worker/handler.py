@@ -203,7 +203,7 @@ def _collapse_repetition_loops(
     return out, loops
 
 
-NEURAL_ENGINES = ("sortformer", "msdd", "pyannote", "pyannote31")
+NEURAL_ENGINES = ("sortformer", "msdd", "pyannote")
 
 
 def _engine_fn(name: str):

@@ -31,16 +31,15 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Two generations, both measurable. pyannote renamed rather than renumbered,
-# so "3.1" reads as the higher version while community-1 is the one that came
-# after and replaced it - their own model card marks 3.1 legacy. Rather than
-# argue the point, both are wired up: whichever weights the build managed to
-# fetch get measured on the same audio as everything else.
+# Only the current generation. pyannote renamed rather than renumbered, so
+# "3.1" reads as the higher version while community-1 is the one that came
+# after and replaced it - their own model card marks 3.1 legacy and puts the
+# improvement in speaker counting and assignment, which is our failure. The
+# legacy pipeline was briefly wired up here to settle that by measurement
+# rather than assertion; it is not worth the disk or the build step.
 VARIANTS = {
     "pyannote": ("pyannote/speaker-diarization-community-1",
                  "/opt/pyannote/community1.ok"),
-    "pyannote31": ("pyannote/speaker-diarization-3.1",
-                   "/opt/pyannote/v31.ok"),
 }
 
 _pipelines: dict[str, object] = {}
