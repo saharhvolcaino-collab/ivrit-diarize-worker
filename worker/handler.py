@@ -41,7 +41,13 @@ import urllib.request
 
 import runpod
 
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "ivrit-ai/whisper-large-v3-turbo-ct2")
+# The full model, not turbo. On ivrit.ai's own leaderboard the non-turbo model
+# leads on every eval set (0.051 vs 0.053 WER on eval-d1, 0.081 vs 0.082 on
+# kan) - a small margin on clean audio, but those benchmarks were measured on
+# clean audio, and ours is 8-bit narrowband telephone where the harder model
+# has more room to matter. Turbo is roughly 2x faster; at 3 agorot per hour of
+# audio that is not a trade worth making.
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "ivrit-ai/whisper-large-v3-ct2")
 
 # Loaded once at module scope. RunPod's FlashBoot snapshots the live process,
 # so models loaded lazily inside the handler would be reloaded on every cold
@@ -105,7 +111,13 @@ def _transcribe(wav: str, job_input: dict) -> tuple[list[dict], dict]:
         # The single biggest anti-hallucination lever: one invented segment
         # must not seed a repetition loop through the rest of the recording.
         condition_on_previous_text=False,
-        temperature=0.0,
+        # A single temperature, not the default fallback ladder. The ladder
+        # re-decodes with sampling whenever a quality check fails, which makes
+        # the output non-reproducible exactly on the hard segments - two runs
+        # of the same file differed by 27 words and by 4 buried answers, enough
+        # to flip a file's verdict. A failed segment is better left failed and
+        # visible than silently re-rolled.
+        temperature=[0.0],
         beam_size=int(job_input.get("beam_size", 5)),
         hotwords=job_input.get("hotwords") or None,
     )

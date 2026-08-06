@@ -45,7 +45,7 @@ COPY worker/handler.py /app/handler.py
 # Whisper (CTranslate2 snapshot into the HF cache the runtime will read).
 RUN python -c "\
 from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='ivrit-ai/whisper-large-v3-turbo-ct2')"
+snapshot_download(repo_id='ivrit-ai/whisper-large-v3-ct2')"
 
 # ECAPA speaker encoder - loading it through our own module also materialises
 # the copied savedir layout the runtime expects.

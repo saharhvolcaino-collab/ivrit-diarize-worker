@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 API_BASE = "https://api.runpod.ai/v2"
-DEFAULT_MODEL = "ivrit-ai/whisper-large-v3-turbo-ct2"
+DEFAULT_MODEL = "ivrit-ai/whisper-large-v3-ct2"
 # RunPod rejects anything larger on /run. Base64 inflates by ~4/3, so the real
 # ceiling on raw audio is around 7.5 MB.
 MAX_PAYLOAD_BYTES = 10 * 1024 * 1024
