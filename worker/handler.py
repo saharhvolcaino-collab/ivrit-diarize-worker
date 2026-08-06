@@ -211,7 +211,17 @@ def handler(job):
             num_speakers = int(job_input.get("num_speakers", 2))
 
             t0 = time.time()
-            local = diar.diarize(wav, num_speakers=num_speakers)
+            # Feed the diarizer the same speech the ASR heard. faster-whisper
+            # applies VAD internally, so without this the diarizer alone sees
+            # the silence, hold music and line noise - and embeds the channel
+            # instead of the speakers.
+            from pipeline import vad as vad_mod
+            spans, _total = vad_mod.detect_speech(
+                wav, threshold=float(job_input.get("vad_threshold", 0.4))
+            )
+            speech_spans = [(s.start, s.end) for s in spans]
+            local = diar.diarize(wav, num_speakers=num_speakers,
+                                 speech_spans=speech_spans)
             labelled = diar.assign_words(words, local.turns)
             flips = handed = 0
             if local.centroids is not None:

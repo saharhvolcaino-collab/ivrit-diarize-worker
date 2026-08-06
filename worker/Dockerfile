@@ -23,6 +23,7 @@ RUN pip install \
         "faster-whisper==1.2.1" \
         "ctranslate2==4.8.1" \
         "speechbrain>=1.0" \
+        "silero-vad" \
         "scikit-learn" \
         "numpy<2.5" \
         "huggingface-hub" \
@@ -49,7 +50,7 @@ snapshot_download(repo_id='ivrit-ai/whisper-large-v3-turbo-ct2')"
 # ECAPA speaker encoder - loading it through our own module also materialises
 # the copied savedir layout the runtime expects.
 RUN python -c "\
-from pipeline.diarize import _get_encoder; _get_encoder(); print('ecapa baked')"
+from pipeline.diarize import _get_encoder; _get_encoder(); import silero_vad; silero_vad.load_silero_vad(); print('ecapa baked')"
 
 # Offline from here on: no HF round-trips, rate limits or outages at runtime.
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \

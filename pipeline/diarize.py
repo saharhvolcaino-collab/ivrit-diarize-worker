@@ -162,12 +162,33 @@ def _voiced_mask(audio: np.ndarray) -> np.ndarray:
     return np.pad(mask, (0, audio.size - mask.size), constant_values=False)
 
 
-def _embed_windows(audio: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (centre times, L2-normalised embeddings) for each voiced window."""
+def _spans_to_mask(spans: list[tuple[float, float]], size: int) -> np.ndarray:
+    mask = np.zeros(size, dtype=bool)
+    for start, end in spans:
+        a = max(0, int(start * SAMPLE_RATE))
+        b = min(size, int(end * SAMPLE_RATE))
+        if b > a:
+            mask[a:b] = True
+    return mask
+
+
+def _embed_windows(
+    audio: np.ndarray, speech_spans: list[tuple[float, float]] | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (centre times, L2-normalised embeddings) for each voiced window.
+
+    `speech_spans` should carry a real VAD's output. Without it this falls back
+    to a crude energy gate, which lets hold music and line noise through - and
+    those windows embed the channel rather than a person, pulling both speaker
+    centroids toward each other. On one 14-minute support call that was the
+    difference between separable and not: the diarizer was fed 856 seconds
+    where the ASR only ever heard 529.
+    """
     import torch
 
     encoder = _get_encoder()
-    voiced = _voiced_mask(audio)
+    voiced = (_spans_to_mask(speech_spans, audio.size) if speech_spans
+              else _voiced_mask(audio))
     win = int(WINDOW_SEC * SAMPLE_RATE)
     hop = int(HOP_SEC * SAMPLE_RATE)
 
@@ -308,9 +329,13 @@ def _smooth(times: np.ndarray, labels: np.ndarray, min_turn: float = 0.6) -> lis
     return merged
 
 
-def diarize(audio_path: str | Path, num_speakers: int = 2) -> DiarizationResult:
+def diarize(
+    audio_path: str | Path,
+    num_speakers: int = 2,
+    speech_spans: list[tuple[float, float]] | None = None,
+) -> DiarizationResult:
     audio = _load_audio(audio_path)
-    times, emb = _embed_windows(audio)
+    times, emb = _embed_windows(audio, speech_spans)
 
     if times.size == 0:
         return DiarizationResult([], [], 0, 0.0,
