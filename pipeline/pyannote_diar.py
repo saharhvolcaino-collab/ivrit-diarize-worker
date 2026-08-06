@@ -67,16 +67,53 @@ class Result:
     notes: list[str] = field(default_factory=list)
 
 
+def _fetch_at_runtime(model_id: str) -> None:
+    """Pull the gated weights on first use, in a throwaway interpreter.
+
+    Exists for build environments that cannot hold a secret - RunPod's GitHub
+    integration builds the image on their infrastructure with no way to mount
+    a token, so the bake step there cannot fetch gated weights. The download
+    moves to the first cold start instead, where the token arrives as an
+    ordinary endpoint environment variable.
+
+    The subprocess is the clean part: this image pins HF_HUB_OFFLINE=1 so the
+    runtime never depends on Hugging Face being up, and huggingface_hub reads
+    that flag once at import. A child interpreter with the flag overridden can
+    download into the shared cache without this process ever going online -
+    after it exits, the load below proceeds offline from the cache it filled.
+    """
+    import subprocess
+    import sys
+
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        raise RuntimeError(
+            f"{model_id} is not in this image and no HF_TOKEN is set on the "
+            "endpoint, so it cannot be fetched. Add the token as an endpoint "
+            "environment variable, or bake the weights at build time.")
+    subprocess.run(
+        [sys.executable, "-c",
+         "import sys; from huggingface_hub import snapshot_download; "
+         "snapshot_download(repo_id=sys.argv[1], token=sys.argv[2])",
+         model_id, token],
+        check=True,
+        env={**os.environ, "HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"},
+    )
+
+
+def _cached(model_id: str) -> bool:
+    """True if the weights are already in the local Hugging Face cache."""
+    from huggingface_hub import try_to_load_from_cache
+    return try_to_load_from_cache(model_id, "config.yaml") is not None
+
+
 def _load(engine: str = "pyannote"):
     if engine in _pipelines:
         return _pipelines[engine]
 
     model_id, marker = VARIANTS[engine]
-    if not Path(marker).exists():
-        raise RuntimeError(
-            f"{model_id} was not baked into this image. Its weights are gated: "
-            "accept the conditions on its Hugging Face page with the same "
-            "account that issued the build's HF_TOKEN.")
+    if not Path(marker).exists() and not _cached(model_id):
+        _fetch_at_runtime(model_id)
 
     import torch
     from pyannote.audio import Pipeline
