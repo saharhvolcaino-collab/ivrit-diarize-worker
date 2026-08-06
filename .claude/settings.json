@@ -17,7 +17,10 @@
       "Bash(python diar_lab.py out/strong_a/Rec722_83_11-18-44_08-06-2026.gpu.json --calibrate --diagnose-only)",
       "Bash(python -m py_compile worker/handler.py pipeline/pyannote_diar.py compare_diar.py)",
       "Bash(python -c \"print\\('pyyaml missing, skipping yaml parse'\\)\")",
-      "Bash(python -m py_compile pipeline/pyannote_diar.py worker/handler.py compare_diar.py diar_lab.py)"
+      "Bash(python -m py_compile pipeline/pyannote_diar.py worker/handler.py compare_diar.py diar_lab.py)",
+      "Bash(grep -viE \"^\\\\s*$|already satisfied\")",
+      "Bash(python -m py_compile diar_lab.py)",
+      "Bash(curl -s \"https://www.githubstatus.com/api/v2/incidents/unresolved.json\")"
     ]
   }
 }

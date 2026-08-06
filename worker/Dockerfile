@@ -57,20 +57,31 @@ RUN pip install \
 RUN python -c 'import importlib.metadata as m; ns=("torch","torchaudio","torchvision"); p={}; [p.setdefault(d.metadata["Name"], d.version.split("+")[0]) for d in m.distributions() if d.metadata["Name"] in ns]; print("\n".join(k+"=="+v for k,v in p.items()))' > /tmp/torch-pins.txt \
     && cat /tmp/torch-pins.txt
 
+# NeMo and pyannote install together, in one resolution, on purpose. They share
+# lightning, omegaconf, speechbrain and transformers, so installing them in
+# separate steps lets the second one silently move a shared dependency out from
+# under the first. Resolving them together makes pip refuse an incompatible
+# combination instead of producing one - a build that fails is far cheaper than
+# an image that builds and then breaks on the first paid request.
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
-    && pip install -c /tmp/torch-pins.txt "numpy<2.5" "nemo_toolkit[asr]==2.7.3" \
+    && pip install -c /tmp/torch-pins.txt \
+        "numpy<2.5" \
+        "nemo_toolkit[asr]==2.7.3" \
+        "pyannote.audio>=4.0" \
     && apt-get purge -y build-essential && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 
-# If pip replaced torch anyway, every downstream layer would run on a CPU build
-# and the failure would only surface as a slow, wrong first request.
-RUN python -c "import torch; assert torch.version.cuda, 'torch lost its CUDA build during the NeMo install'; print('torch', torch.__version__)"
-
-# Fail the build, not the first paid request, if the dependency graph broke.
-# Sortformer is required; the import is unguarded on purpose. MSDD is checked
-# separately below because it is allowed to be missing.
-RUN python -c "import ctranslate2, faster_whisper, speechbrain, sklearn, numpy, numba, torch; \
+# One check, after every install, covering everything the worker imports. It
+# used to run before pyannote arrived, which meant it verified a dependency
+# graph that no longer existed by the time the image was published.
+#
+# torch.version.cuda is checked because pip replacing torch with a CPU wheel
+# would otherwise surface only as a slow, wrong first request on the GPU.
+RUN python -c "\
+import ctranslate2, faster_whisper, speechbrain, sklearn, numpy, numba, torch; \
 from nemo.collections.asr.models import SortformerEncLabelModel; \
+from pyannote.audio import Pipeline; \
+assert torch.version.cuda, 'torch lost its CUDA build during the installs'; \
 print('ct2', ctranslate2.__version__, '| torch', torch.__version__, \
       '| numpy', numpy.__version__, '| numba', numba.__version__)"
 
@@ -129,8 +140,7 @@ print('msdd baked')" && touch /opt/nemo_models/msdd.ok \
 # same-speaker and different-speaker embedding distance is 0.13 against a
 # within-speaker spread of 0.72, so anything that decides turn boundaries
 # without consulting an embedding is worth a measurement.
-RUN pip install -c /tmp/torch-pins.txt "pyannote.audio>=4.0"
-
+#
 # The token is mounted, never copied: a build-arg would be readable in the
 # image history forever. Best-effort for the same reason MSDD is - a gated
 # download that fails should cost this engine, not the whole build.

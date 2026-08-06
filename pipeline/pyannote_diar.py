@@ -94,6 +94,25 @@ def _load(engine: str = "pyannote"):
     return p
 
 
+def _as_waveform(audio_path: str | Path) -> dict:
+    """Hand pyannote the samples, not a filename.
+
+    Its default reader goes through torchcodec, which needs a matching FFmpeg
+    shared library and silently is not there on some platforms - the failure
+    surfaces as a decode error at inference time, long after the build passed.
+    The worker has already produced 16 kHz mono PCM by this point, so reading
+    it ourselves removes that dependency entirely and costs one file read.
+    """
+    import numpy as np
+    import soundfile as sf
+    import torch
+
+    data, sr = sf.read(str(audio_path), dtype="float32", always_2d=True)
+    mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
+    return {"waveform": torch.from_numpy(np.ascontiguousarray(mono))[None, :],
+            "sample_rate": int(sr)}
+
+
 def _iter_turns(output):
     """Read turns out of whichever result shape this pyannote version returns.
 
@@ -124,10 +143,7 @@ def diarize(audio_path: str | Path, num_speakers: int = 2,
     t0 = time.time()
     pipeline = _load(engine)
 
-    # 16 kHz mono is what the worker already writes, and what the pipeline
-    # wants; passing the path lets pyannote do its own IO rather than us
-    # guessing at its tensor layout.
-    output = pipeline(str(audio_path), num_speakers=num_speakers)
+    output = pipeline(_as_waveform(audio_path), num_speakers=num_speakers)
 
     raw = [Turn(round(s, 3), round(e, 3), spk)
            for s, e, spk in _iter_turns(output) if e > s]

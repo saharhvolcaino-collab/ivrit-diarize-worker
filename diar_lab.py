@@ -213,6 +213,54 @@ def diagnose(audio_path: Path, turns: list[dict], words: list[dict]) -> None:
         print("\n    control: no question-free turns long enough to split")
 
 
+def run_pyannote(audio_path: Path, words: list[dict], num_speakers: int = 2) -> dict:
+    """Score pyannote over the same cached words, on this machine.
+
+    The image is not built yet, but nothing about the comparison requires a
+    GPU: the transcript is fixed, so running the pipeline here answers the
+    only question that matters - does it merge fewer questions with their
+    answers than what is deployed today.
+    """
+    import os
+    from pipeline import pyannote_diar as pyd
+
+    # Locally the weights live in the ordinary Hugging Face cache rather than
+    # baked into an image, so the build marker will not exist. Point it at
+    # something real instead of loosening the check that protects production.
+    marker = Path(".pyannote_ready")
+    marker.touch()
+    model_id = pyd.VARIANTS["pyannote"][0]
+    pyd.VARIANTS["pyannote"] = (model_id, str(marker))
+    if not os.environ.get("HF_TOKEN") and Path(".env").exists():
+        for line in Path(".env").read_text(encoding="utf-8").splitlines():
+            if line.startswith("HF_TOKEN="):
+                os.environ["HF_TOKEN"] = line.split("=", 1)[1].strip()
+
+    t0 = time.time()
+    res = pyd.diarize(audio_path, num_speakers=num_speakers)
+    print(f"    pyannote produced {len(res.turns)} raw turns in {time.time() - t0:.0f}s")
+    for n in res.notes:
+        print(f"    [!] {n}")
+
+    labelled = pyd_assign(words, res.turns)
+    labelled = diar.realign_by_punctuation(labelled)
+    final = diar.turns_from_words(labelled)
+    report = quality.assess({"turns": final}, expected_speakers=num_speakers).to_dict()
+    return {
+        "variant": "pyannote", "windows": 0, "separation": 0.0,
+        "flips": 0, "handed": 0, "turns": len(final),
+        "buried": report.get("buried_answers", 0),
+        "dominant": report.get("dominant_speaker_pct", 0),
+        "speakers": report.get("speakers", 0), "verdict": report.get("verdict", "?"),
+        "_turns": final,
+    }
+
+
+def pyd_assign(words: list[dict], turns) -> list[dict]:
+    from pipeline import nemo_diar
+    return nemo_diar.assign_words(words, turns)
+
+
 def calibrate(audio_path: Path, spans, lengths=(0.5, 1.0, 1.5, 2.0, 3.0)) -> None:
     """How long must a segment be before ECAPA can tell voices apart here?
 
@@ -301,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--speakers", type=int, default=2)
     p.add_argument("--vad", type=float, default=0.4)
     p.add_argument("--diagnose", action="store_true")
+    p.add_argument("--pyannote", action="store_true",
+                   help="score pyannote community-1 over the cached words")
     p.add_argument("--calibrate", action="store_true",
                    help="measure whether ECAPA separates speakers on this audio "
                         "at all, using no turn labels")
@@ -337,6 +387,13 @@ def main(argv: list[str] | None = None) -> int:
 
     cache: dict = {}
     rows = []
+    if args.pyannote:
+        print("  -- pyannote")
+        try:
+            rows.append(run_pyannote(audio_path, words, args.speakers))
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            rows.append({"variant": "pyannote", "error": f"{type(exc).__name__}: {exc}"})
     for name in args.variants.split(","):
         name = name.strip()
         if name not in VARIANTS:
