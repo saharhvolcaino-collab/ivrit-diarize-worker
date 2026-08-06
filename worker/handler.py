@@ -120,6 +120,12 @@ def _transcribe(wav: str, job_input: dict) -> tuple[list[dict], dict]:
                 "probability": round(float(w.probability), 4),
             })
 
+    words, looped = _collapse_repetition_loops(words)
+    if looped:
+        meta_note = f"collapsed {looped} decoder repetition loop(s)"
+    else:
+        meta_note = None
+
     meta = {
         "model": WHISPER_MODEL,
         "language": info.language,
@@ -127,7 +133,62 @@ def _transcribe(wav: str, job_input: dict) -> tuple[list[dict], dict]:
         "duration_after_vad_sec": round(
             float(getattr(info, "duration_after_vad", info.duration)), 2),
     }
+    if meta_note:
+        meta["notes"] = [meta_note]
     return words, meta
+
+
+def _collapse_repetition_loops(
+    words: list[dict], max_cycles: int = 3
+) -> tuple[list[dict], int]:
+    """Cut the decoder's repetition loops out of the word stream.
+
+    Letter-by-letter dictation over a phone line - someone spelling out an
+    email address, slowly, with pauses - produces periodic audio that can trap
+    Whisper's decoder in a loop: one real call came back with ".u .p" repeated
+    over forty times. condition_on_previous_text=False blocks contamination
+    *between* windows but not a loop *within* one, so this cleans up after it.
+
+    Detection is deterministic: a cycle of one or two normalised tokens
+    repeating more than max_cycles consecutive times is not speech (nobody
+    says "u p" forty times), so everything past the third cycle goes. Genuine
+    short repetitions - "לא, לא, לא", "רגע רגע" - stay, because three cycles
+    are kept.
+    """
+    def norm(w: dict) -> str:
+        return (w.get("word") or "").strip(" .,!?").lower()
+
+    out: list[dict] = []
+    removed = 0
+    loops = 0
+    i = 0
+    n = len(words)
+    while i < n:
+        cut = False
+        for cycle_len in (1, 2):
+            if i + cycle_len * (max_cycles + 1) > n:
+                continue
+            cycle = [norm(words[i + k]) for k in range(cycle_len)]
+            if not all(cycle):
+                continue
+            reps = 1
+            j = i + cycle_len
+            while (j + cycle_len <= n
+                   and [norm(words[j + k]) for k in range(cycle_len)] == cycle):
+                reps += 1
+                j += cycle_len
+            if reps > max_cycles:
+                keep = i + cycle_len * max_cycles
+                out.extend(words[i:keep])
+                removed += j - keep
+                loops += 1
+                i = j
+                cut = True
+                break
+        if not cut:
+            out.append(words[i])
+            i += 1
+    return out, loops
 
 
 def handler(job):
