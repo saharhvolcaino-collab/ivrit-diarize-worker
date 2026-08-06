@@ -87,13 +87,34 @@ def process_all(files: list[Path], out_dir: Path, force: bool,
 
 
 def _gpu_to_result(out: dict) -> dict:
-    """Adapt the worker's response to the shape the report reader expects."""
+    """Adapt the worker's response to the shape the report reader expects.
+
+    Quality is re-scored locally from the returned words rather than trusting
+    the verdict stored in the response - verdict logic evolves faster than the
+    worker image, and this lets a report round apply today's rules to
+    yesterday's cached results without paying for GPU reruns.
+    """
+    words = out.get("words", [])
+    quality = out.get("quality", {})
+    turns = out.get("turns", [])
+    if words:
+        try:
+            from pipeline import diarize as diar
+            from pipeline import quality as quality_mod
+            rebuilt = diar.turns_from_words(
+                [w for w in words if w.get("speaker")])
+            if rebuilt:
+                quality = quality_mod.assess({"turns": rebuilt},
+                                             expected_speakers=2).to_dict()
+                turns = rebuilt
+        except Exception:
+            pass
     return {
-        "quality": out.get("quality", {}),
+        "quality": quality,
         "turns": [
             {"speaker": t["speaker"], "start": t["start"], "end": t["end"],
              "text": t.get("text", "")}
-            for t in out.get("turns", [])
+            for t in turns
         ],
         "duration_sec": out.get("meta", {}).get("duration_sec", 0.0),
     }

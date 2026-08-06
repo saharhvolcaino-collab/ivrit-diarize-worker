@@ -76,7 +76,13 @@ def assess(transcript: dict, expected_speakers: int | None = 2) -> QualityReport
     words = [w for t in turns for w in t.get("words", [])]
     confidences = [w["probability"] for w in words if w.get("probability") is not None]
 
-    texts = [t["text"].strip() for t in turns if t.get("text", "").strip()]
+    # Only multi-word lines count as suspicious repetition. Backchannels -
+    # "כן.", "לא.", "אוקיי." - repeat constantly in real conversation; the
+    # hallucination signature is a whole PHRASE coming back verbatim.
+    texts = [
+        t["text"].strip() for t in turns
+        if t.get("text", "").strip() and len(t["text"].split()) >= 3
+    ]
     counts = Counter(texts)
     repeated = sum(c - 1 for c in counts.values() if c > 1)
     repeated_examples = [t for t, c in counts.most_common(3) if c > 1]
