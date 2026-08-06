@@ -15,7 +15,13 @@
 # Build from the REPO ROOT (the pipeline/ package is copied in):
 #   docker build -f worker/Dockerfile -t ivrit-diarize-worker .
 
-FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+# torch 2.8, not 2.7. pyannote.audio 4 requires torch>=2.8.0 while the 2.7.1
+# base made the two diarizer stacks unsolvable together - pip said so out
+# loud rather than quietly installing a broken pair, which is what the single
+# combined resolution below is for. 2.8.0 satisfies pyannote and clears NeMo's
+# torch>=2.6.0 with room to spare; cuda12.8 matches the previous base, so the
+# runtime CUDA story is unchanged.
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
@@ -62,10 +68,19 @@ RUN python -c 'import importlib.metadata as m; ns=("torch","torchaudio","torchvi
 # separate steps lets the second one silently move a shared dependency out from
 # under the first. Resolving them together makes pip refuse an incompatible
 # combination instead of producing one - a build that fails is far cheaper than
-# an image that builds and then breaks on the first paid request.
+# an image that builds and then breaks on the first paid request. It has
+# already earned that: the pair was genuinely unsolvable on torch 2.7 and pip
+# refused, rather than leaving us to discover it on the GPU.
+#
+# lightning is pinned rather than left to the resolver because the two stacks
+# leave it exactly one legal value - NeMo's asr extra caps it at <=2.4.0 and
+# pyannote floors it at >=2.4. Naming 2.4.0 turns a corridor one version wide
+# into a stated fact, so the next conflict here fails loudly instead of
+# looking like bad luck.
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && pip install -c /tmp/torch-pins.txt \
         "numpy<2.5" \
+        "lightning==2.4.0" \
         "nemo_toolkit[asr]==2.7.3" \
         "pyannote.audio>=4.0" \
     && apt-get purge -y build-essential && apt-get autoremove -y \

@@ -20,7 +20,14 @@
       "Bash(python -m py_compile pipeline/pyannote_diar.py worker/handler.py compare_diar.py diar_lab.py)",
       "Bash(grep -viE \"^\\\\s*$|already satisfied\")",
       "Bash(python -m py_compile diar_lab.py)",
-      "Bash(curl -s \"https://www.githubstatus.com/api/v2/incidents/unresolved.json\")"
+      "Bash(curl -s \"https://www.githubstatus.com/api/v2/incidents/unresolved.json\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"https://raw.githubusercontent.com/saharhvolcaino-collab/ivrit-diarize-worker/main/worker/Dockerfile\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"https://raw.githubusercontent.com/saharhvolcaino-collab/ivrit-diarize-worker/main/worker/handler.py\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/saharhvolcaino-collab/ivrit-diarize-worker/main/worker/handler.py\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/saharhvolcaino-collab/ivrit-diarize-worker/main/worker/Dockerfile\")",
+      "Bash(curl -s -o /dev/null -w \"  /handler.py -> %{http_code}\\\\n\" \"https://raw.githubusercontent.com/saharhvolcaino-collab/ivrit-diarize-worker/main/handler.py\")",
+      "Bash(curl -s \"https://hub.docker.com/v2/repositories/pytorch/pytorch/tags?page_size=100&name=cuda12\")",
+      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\fix_dockerfile.py\")"
     ]
   }
 }
