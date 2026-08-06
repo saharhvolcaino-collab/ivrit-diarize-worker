@@ -31,11 +31,19 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-MODEL_ID = os.environ.get("PYANNOTE_MODEL",
-                          "pyannote/speaker-diarization-community-1")
-MARKER = os.environ.get("PYANNOTE_MARKER", "/opt/pyannote/ready.ok")
+# Two generations, both measurable. pyannote renamed rather than renumbered,
+# so "3.1" reads as the higher version while community-1 is the one that came
+# after and replaced it - their own model card marks 3.1 legacy. Rather than
+# argue the point, both are wired up: whichever weights the build managed to
+# fetch get measured on the same audio as everything else.
+VARIANTS = {
+    "pyannote": ("pyannote/speaker-diarization-community-1",
+                 "/opt/pyannote/community1.ok"),
+    "pyannote31": ("pyannote/speaker-diarization-3.1",
+                   "/opt/pyannote/v31.ok"),
+}
 
-_pipeline = None
+_pipelines: dict[str, object] = {}
 
 
 @dataclass
@@ -60,29 +68,30 @@ class Result:
     notes: list[str] = field(default_factory=list)
 
 
-def _load():
-    global _pipeline
-    if _pipeline is not None:
-        return _pipeline
+def _load(engine: str = "pyannote"):
+    if engine in _pipelines:
+        return _pipelines[engine]
 
-    if not Path(MARKER).exists():
+    model_id, marker = VARIANTS[engine]
+    if not Path(marker).exists():
         raise RuntimeError(
-            f"{MODEL_ID} was not baked into this image. It is gated: accept the "
-            "conditions on its Hugging Face page and give the build an HF_TOKEN.")
+            f"{model_id} was not baked into this image. Its weights are gated: "
+            "accept the conditions on its Hugging Face page with the same "
+            "account that issued the build's HF_TOKEN.")
 
     import torch
     from pyannote.audio import Pipeline
 
     # HF_HUB_OFFLINE is set in the image, so this resolves from the baked cache
     # and never reaches the network - the token is a build-time concern only.
-    p = Pipeline.from_pretrained(MODEL_ID, token=os.environ.get("HF_TOKEN"))
+    p = Pipeline.from_pretrained(model_id, token=os.environ.get("HF_TOKEN"))
     if p is None:
         raise RuntimeError(
-            f"Pipeline.from_pretrained returned None for {MODEL_ID} - the usual "
+            f"Pipeline.from_pretrained returned None for {model_id} - the usual "
             "cause is unaccepted gating conditions rather than a bad path.")
     if torch.cuda.is_available():
         p.to(torch.device("cuda"))
-    _pipeline = p
+    _pipelines[engine] = p
     return p
 
 
@@ -111,9 +120,10 @@ def _iter_turns(output):
             yield segment.start, segment.end, speaker
 
 
-def diarize(audio_path: str | Path, num_speakers: int = 2) -> Result:
+def diarize(audio_path: str | Path, num_speakers: int = 2,
+            engine: str = "pyannote") -> Result:
     t0 = time.time()
-    pipeline = _load()
+    pipeline = _load(engine)
 
     # 16 kHz mono is what the worker already writes, and what the pipeline
     # wants; passing the path lets pyannote do its own IO rather than us
@@ -143,7 +153,7 @@ def diarize(audio_path: str | Path, num_speakers: int = 2) -> Result:
     return Result(
         turns=raw,
         speakers=sorted(set(rename.values())),
-        engine="pyannote",
+        engine=engine,
         seconds=round(time.time() - t0, 2),
         notes=notes,
     )

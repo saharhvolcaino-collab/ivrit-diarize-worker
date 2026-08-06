@@ -142,8 +142,25 @@ from pyannote.audio import Pipeline; \
 t = os.environ.get('HF_TOKEN') or None; \
 p = Pipeline.from_pretrained('pyannote/speaker-diarization-community-1', token=t); \
 assert p is not None, 'gated: conditions not accepted for this token'; \
-print('pyannote baked')" && touch /opt/pyannote/ready.ok \
-    || echo 'pyannote unavailable at build time - engine will report itself missing'
+print('pyannote community-1 baked')" && touch /opt/pyannote/community1.ok \
+    || echo 'pyannote community-1 unavailable - engine will report itself missing'
+
+# The previous generation, baked only if the same token can reach it. pyannote
+# marks 3.1 legacy and says community-1 improves on it precisely in speaker
+# counting and assignment - which is our failure - but that is their claim, not
+# a measurement on our audio. Including it costs one small download and turns
+# the question into a number. It gates separately (3.1 pulls segmentation-3.0
+# and a WeSpeaker embedder, each with its own conditions), and pyannote.audio 4
+# may not load a v3 pipeline at all, so this failing is expected, not alarming.
+RUN --mount=type=secret,id=hf_token \
+    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null)" python -c "\
+import os; \
+from pyannote.audio import Pipeline; \
+t = os.environ.get('HF_TOKEN') or None; \
+p = Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=t); \
+assert p is not None, 'gated: conditions not accepted for this token'; \
+print('pyannote 3.1 baked')" && touch /opt/pyannote/v31.ok \
+    || echo 'pyannote 3.1 unavailable - engine will report itself missing'
 
 # Offline from here on: no HF round-trips, rate limits or outages at runtime.
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
@@ -152,7 +169,6 @@ ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
     SORTFORMER_PP=/opt/nemo_cfg/callhome_pp.yaml \
     MSDD_CONFIG=/opt/nemo_cfg/diar_infer_telephonic.yaml \
     MSDD_MARKER=/opt/nemo_models/msdd.ok \
-    PYANNOTE_MARKER=/opt/pyannote/ready.ok \
     CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 CMD ["python", "-u", "/app/handler.py"]

@@ -203,14 +203,15 @@ def _collapse_repetition_loops(
     return out, loops
 
 
-NEURAL_ENGINES = ("sortformer", "msdd", "pyannote")
+NEURAL_ENGINES = ("sortformer", "msdd", "pyannote", "pyannote31")
 
 
 def _engine_fn(name: str):
     """Resolve an engine lazily, so one heavy import cannot break the others."""
-    if name == "pyannote":
+    if name.startswith("pyannote"):
+        from functools import partial
         from pipeline import pyannote_diar
-        return pyannote_diar.diarize
+        return partial(pyannote_diar.diarize, engine=name)
     from pipeline import nemo_diar
     return (nemo_diar.diarize_sortformer if name == "sortformer"
             else nemo_diar.diarize_msdd)

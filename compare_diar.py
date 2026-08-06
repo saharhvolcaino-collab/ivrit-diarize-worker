@@ -29,7 +29,7 @@ from pipeline import preprocess as prep_mod
 from pipeline import runpod_client as rp
 
 API = "https://api.runpod.ai/v2"
-ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
+ENGINES = ["ecapa", "sortformer", "msdd", "pyannote", "pyannote31"]
 
 
 def _submit(blob: str, endpoint: str, creds, engines: list[str],
