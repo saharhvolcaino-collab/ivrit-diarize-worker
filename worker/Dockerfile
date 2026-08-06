@@ -40,12 +40,28 @@ RUN pip install \
 #
 # The base image is a `runtime` tag and ships no compiler, but several of
 # NeMo's transitive dependencies have no wheel for this interpreter and build
-# from source. The toolchain is installed and removed inside this one layer so
+# from source. The toolchain is installed and removed inside its own layer so
 # ~250 MB of gcc does not ride along to every worker.
+#
+# The pin file below is the point of this whole section. NeMo depends on torch,
+# and the torch already in this image carries a local version tag (+cu128) that
+# pip does not match against a plain requirement - so it happily "satisfies"
+# the dependency by downloading torch again from PyPI, which drags in the whole
+# nvidia-cu12 wheel set: gigabytes of download, more unpacked, on top of a CUDA
+# stack that was already here. Pinning the installed versions without their
+# local segment makes pip keep what is here. Cheap insurance, not a fix for an
+# observed failure - this layer has never been watched succeeding.
+RUN python -c 'import importlib.metadata as m; ns=("torch","torchaudio","torchvision"); p={}; [p.setdefault(d.metadata["Name"], d.version.split("+")[0]) for d in m.distributions() if d.metadata["Name"] in ns]; print("\n".join(k+"=="+v for k,v in p.items()))' > /tmp/torch-pins.txt \
+    && cat /tmp/torch-pins.txt
+
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
-    && pip install "numpy<2.5" "nemo_toolkit[asr]==2.7.3" \
+    && pip install -c /tmp/torch-pins.txt "numpy<2.5" "nemo_toolkit[asr]==2.7.3" \
     && apt-get purge -y build-essential && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* /root/.cache
+
+# If pip replaced torch anyway, every downstream layer would run on a CPU build
+# and the failure would only surface as a slow, wrong first request.
+RUN python -c "import torch; assert torch.version.cuda, 'torch lost its CUDA build during the NeMo install'; print('torch', torch.__version__)"
 
 # Fail the build, not the first paid request, if the dependency graph broke.
 # Sortformer is required; the import is unguarded on purpose. MSDD is checked

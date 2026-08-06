@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/actions/runs?per_page=10\")",
+      "Bash(python -c ' *)",
+      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker\")",
+      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/check-runs/92674332984/annotations\")"
+    ]
+  }
+}

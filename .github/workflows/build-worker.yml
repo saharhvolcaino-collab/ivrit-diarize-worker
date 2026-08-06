@@ -52,9 +52,8 @@ jobs:
           echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
           sudo systemctl start docker
           # BuildKit stages the compressed blobs it pushes through TMPDIR, which
-          # lives on / by default. The previous run died with an empty step list
-          # and no error - the signature of a runner losing its disk, not of a
-          # build failing - so the scratch space moves to the large volume too.
+          # lives on / by default. An earlier build did run out of room on the
+          # root filesystem, so the scratch space moves to the large volume too.
           sudo mkdir -p /mnt/tmp && sudo chmod 777 /mnt/tmp
           echo "TMPDIR=/mnt/tmp" >> $GITHUB_ENV
           df -h / /mnt
@@ -78,12 +77,15 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          # No GitHub Actions cache. It is capped at 10 GB per repository and
-          # this image is well past that once NeMo and four sets of model
-          # weights are in it - the export blew the runner's disk and the job
-          # was cancelled with no error to read. Pulling the previous image as
-          # a cache source costs one registry download and stays within budget.
+          # Inline cache rather than the GitHub Actions cache: the latter is
+          # capped at 10 GB per repository and this image is past that once
+          # NeMo and four sets of model weights are in it, so entries were
+          # being evicted between builds. Inline metadata rides along inside
+          # the image we already push - no extra storage, no cap, and it makes
+          # `cache-from: type=registry` actually resolve (a plain image tag
+          # carries no cache manifest and would silently cache nothing).
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-to: type=inline
           provenance: false
 
       # If a future build dies the same silent way, this is the evidence that
