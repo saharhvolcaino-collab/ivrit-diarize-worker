@@ -1,0 +1,18 @@
+name: Canary
+
+# The control experiment. This workflow does nothing but echo one line - no
+# Docker, no models, none of our code. If a job this trivial also fails to
+# acquire a hosted runner, the failure cannot be about the content of the
+# build, and arguing about our Dockerfile is arguing with the weather.
+#
+# Delete this file once the runner-acquisition question is settled.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prove a runner can start
+        run: echo "runner acquired and executing at $(date -u)"
