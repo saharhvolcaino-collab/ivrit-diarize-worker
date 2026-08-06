@@ -1,9 +1,12 @@
+# syntax=docker/dockerfile:1.7
 # Hebrew call transcription + speaker attribution, one image.
 #
-# Three diarizers ship together so the transcript can pick a winner instead of
+# Four diarizers ship together so the transcript can pick a winner instead of
 # us picking one on reputation: our own ECAPA window chain, NeMo's Sortformer,
-# and NeMo's telephonic MSDD. Every model is ungated - no tokens, no licence
-# acceptance, nothing that can expire and break a cold start.
+# NeMo's telephonic MSDD, and pyannote's community pipeline. The first three
+# are ungated. pyannote is not - its weights need a Hugging Face token at build
+# time - so it is baked best-effort and reports itself missing if the token was
+# absent, rather than taking the image down with it.
 #
 # The image is large and the build runs on a hosted runner with a finite disk,
 # so caches are purged in the layer that creates them rather than at the end
@@ -121,12 +124,35 @@ na.models.msdd_models.EncDecDiarLabelModel.from_pretrained('diar_msdd_telephonic
 print('msdd baked')" && touch /opt/nemo_models/msdd.ok \
     || echo 'MSDD unavailable at build time - engine will report itself missing'
 
+# pyannote: segmentation first, embeddings only afterwards. Included because
+# that ordering targets the failure we measured - on this audio the gap between
+# same-speaker and different-speaker embedding distance is 0.13 against a
+# within-speaker spread of 0.72, so anything that decides turn boundaries
+# without consulting an embedding is worth a measurement.
+RUN pip install -c /tmp/torch-pins.txt "pyannote.audio>=4.0"
+
+# The token is mounted, never copied: a build-arg would be readable in the
+# image history forever. Best-effort for the same reason MSDD is - a gated
+# download that fails should cost this engine, not the whole build.
+RUN --mount=type=secret,id=hf_token \
+    mkdir -p /opt/pyannote && \
+    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null)" python -c "\
+import os; \
+from pyannote.audio import Pipeline; \
+t = os.environ.get('HF_TOKEN') or None; \
+p = Pipeline.from_pretrained('pyannote/speaker-diarization-community-1', token=t); \
+assert p is not None, 'gated: conditions not accepted for this token'; \
+print('pyannote baked')" && touch /opt/pyannote/ready.ok \
+    || echo 'pyannote unavailable at build time - engine will report itself missing'
+
 # Offline from here on: no HF round-trips, rate limits or outages at runtime.
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
     ECAPA_DEVICE=cuda \
     SORTFORMER_PATH=/opt/nemo_models/sortformer.nemo \
     SORTFORMER_PP=/opt/nemo_cfg/callhome_pp.yaml \
     MSDD_CONFIG=/opt/nemo_cfg/diar_infer_telephonic.yaml \
+    MSDD_MARKER=/opt/nemo_models/msdd.ok \
+    PYANNOTE_MARKER=/opt/pyannote/ready.ok \
     CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 CMD ["python", "-u", "/app/handler.py"]

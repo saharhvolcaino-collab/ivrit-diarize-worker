@@ -87,6 +87,12 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-to: type=inline
           provenance: false
+          # pyannote's weights are gated. Mounted as a secret rather than
+          # passed as a build-arg, which would sit in the image history for
+          # anyone who pulls it. If the secret is unset the bake step fails
+          # softly and that engine reports itself missing at runtime.
+          secrets: |
+            hf_token=${{ secrets.HF_TOKEN }}
 
       # If a future build dies the same silent way, this is the evidence that
       # says whether it ran out of room or failed for a reason worth reading.

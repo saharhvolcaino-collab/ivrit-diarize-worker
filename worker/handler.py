@@ -203,29 +203,44 @@ def _collapse_repetition_loops(
     return out, loops
 
 
+NEURAL_ENGINES = ("sortformer", "msdd", "pyannote")
+
+
+def _engine_fn(name: str):
+    """Resolve an engine lazily, so one heavy import cannot break the others."""
+    if name == "pyannote":
+        from pipeline import pyannote_diar
+        return pyannote_diar.diarize
+    from pipeline import nemo_diar
+    return (nemo_diar.diarize_sortformer if name == "sortformer"
+            else nemo_diar.diarize_msdd)
+
+
 def _run_nemo_engines(
     wav: str, words: list[dict], engines: list[str], num_speakers: int
 ) -> dict:
-    """Run whichever NeMo diarizers were requested, each on the same words.
+    """Run whichever frame-level diarizers were requested, over the same words.
+
+    Every engine returns the same result shape and is scored the same way, so
+    the only thing that varies between them is the diarization itself.
 
     Failures are captured per engine rather than raised: one model being
     unavailable should not cost the caller the transcript, and a partial
-    comparison is still a comparison.
+    comparison is still a comparison. Two of the three can legitimately be
+    absent from an image - MSDD because NVIDIA is retiring it, pyannote
+    because its weights are gated behind a token the build may not have.
     """
     from pipeline import quality
+    from pipeline import nemo_diar
 
-    wanted = [e for e in engines if e in ("sortformer", "msdd")]
+    wanted = [e for e in engines if e in NEURAL_ENGINES]
     if not wanted:
         return {}
-
-    from pipeline import nemo_diar
 
     out: dict = {}
     for name in wanted:
         try:
-            fn = (nemo_diar.diarize_sortformer if name == "sortformer"
-                  else nemo_diar.diarize_msdd)
-            res = fn(wav, num_speakers=num_speakers)
+            res = _engine_fn(name)(wav, num_speakers=num_speakers)
             labelled = nemo_diar.assign_words(words, res.turns)
             keep = ("word", "start", "end", "speaker", "probability")
             labelled = [{k: w.get(k) for k in keep} for w in labelled]
@@ -242,7 +257,7 @@ def _run_nemo_engines(
                           for t in turns],
                 "speakers": sorted({t["speaker"] for t in turns}),
                 "quality": report.to_dict(),
-                "meta": {"seconds": res.seconds,
+                "meta": {"engine": name, "seconds": res.seconds,
                          "dropped_speech_sec": res.dropped_speech_sec,
                          "notes": res.notes},
             }

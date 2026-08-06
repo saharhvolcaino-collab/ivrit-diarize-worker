@@ -4,7 +4,20 @@
       "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/actions/runs?per_page=10\")",
       "Bash(python -c ' *)",
       "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker\")",
-      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/check-runs/92674332984/annotations\")"
+      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/check-runs/92674332984/annotations\")",
+      "Bash(git fetch *)",
+      "Bash(git rev-list *)",
+      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/actions/workflows\")",
+      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/actions/runs?head_sha=b826d0740000000000000000000000000000000\" -o /dev/null)",
+      "Bash(curl -s \"https://api.github.com/repos/saharhvolcaino-collab/ivrit-diarize-worker/commits/b826d07/check-runs\")",
+      "Bash(curl -s \"https://www.githubstatus.com/api/v2/summary.json\")",
+      "Bash(python diar_lab.py out/strong_a/Rec720_76_09-27-51_08-06-2026.gpu.json --variants baseline)",
+      "Bash(python -c \"import torch, os; print\\('threads', torch.get_num_threads\\(\\), '| interop', torch.get_num_interop_threads\\(\\), '| cpus', os.cpu_count\\(\\), '| cuda', torch.cuda.is_available\\(\\)\\)\")",
+      "Bash(python diar_lab.py out/strong_a/Rec722_83_11-18-44_08-06-2026.gpu.json --diagnose-only)",
+      "Bash(python diar_lab.py out/strong_a/Rec722_83_11-18-44_08-06-2026.gpu.json --calibrate --diagnose-only)",
+      "Bash(python -m py_compile worker/handler.py pipeline/pyannote_diar.py compare_diar.py)",
+      "Bash(python -c \"print\\('pyyaml missing, skipping yaml parse'\\)\")",
+      "Bash(python -m py_compile pipeline/pyannote_diar.py worker/handler.py compare_diar.py diar_lab.py)"
     ]
   }
 }
