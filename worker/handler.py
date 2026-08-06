@@ -203,6 +203,55 @@ def _collapse_repetition_loops(
     return out, loops
 
 
+def _run_nemo_engines(
+    wav: str, words: list[dict], engines: list[str], num_speakers: int
+) -> dict:
+    """Run whichever NeMo diarizers were requested, each on the same words.
+
+    Failures are captured per engine rather than raised: one model being
+    unavailable should not cost the caller the transcript, and a partial
+    comparison is still a comparison.
+    """
+    from pipeline import quality
+
+    wanted = [e for e in engines if e in ("sortformer", "msdd")]
+    if not wanted:
+        return {}
+
+    from pipeline import nemo_diar
+
+    out: dict = {}
+    for name in wanted:
+        try:
+            fn = (nemo_diar.diarize_sortformer if name == "sortformer"
+                  else nemo_diar.diarize_msdd)
+            res = fn(wav, num_speakers=num_speakers)
+            labelled = nemo_diar.assign_words(words, res.turns)
+            keep = ("word", "start", "end", "speaker", "probability")
+            labelled = [{k: w.get(k) for k in keep} for w in labelled]
+
+            from pipeline import diarize as diar
+            labelled = diar.realign_by_punctuation(labelled)
+            turns = diar.turns_from_words(labelled)
+            report = quality.assess({"turns": turns}, expected_speakers=num_speakers)
+
+            out[name] = {
+                "words": labelled,
+                "turns": [{"speaker": t["speaker"], "start": round(t["start"], 2),
+                           "end": round(t["end"], 2), "text": t["text"]}
+                          for t in turns],
+                "speakers": sorted({t["speaker"] for t in turns}),
+                "quality": report.to_dict(),
+                "meta": {"seconds": res.seconds,
+                         "dropped_speech_sec": res.dropped_speech_sec,
+                         "notes": res.notes},
+            }
+        except Exception as exc:
+            out[name] = {"error": f"{type(exc).__name__}: {exc}",
+                         "traceback": traceback.format_exc()[-1200:]}
+    return out
+
+
 def handler(job):
     started = time.time()
     job_input = job.get("input") or {}
@@ -221,6 +270,34 @@ def handler(job):
             from pipeline import quality
 
             num_speakers = int(job_input.get("num_speakers", 2))
+
+            # Sortformer and MSDD both replace the sliding-window embedder with
+            # a network that segments at frame resolution and was trained on
+            # telephone speech. They are requested by name so one call can run
+            # several and return them side by side for comparison.
+            engines = job_input.get("engines") or ["ecapa"]
+            if isinstance(engines, str):
+                engines = [engines]
+            extra = _run_nemo_engines(wav, words, engines, num_speakers)
+            if extra and "ecapa" not in engines:
+                # Caller asked only for NeMo engines - return the first as the
+                # primary result and skip the local chain entirely.
+                primary = extra[engines[0]]
+                result.update({
+                    "words": primary["words"],
+                    "turns": primary["turns"],
+                    "speakers": primary["speakers"],
+                    "quality": primary["quality"],
+                    "diarization": {"engine": engines[0], **primary["meta"]},
+                })
+                if len(extra) > 1:
+                    result["alternates"] = {
+                        k: {"turns": v["turns"], "quality": v["quality"],
+                            "meta": v["meta"]}
+                        for k, v in extra.items() if k != engines[0]
+                    }
+                result["meta"]["total_sec"] = round(time.time() - started, 2)
+                return result
 
             t0 = time.time()
             # Feed the diarizer the same speech the ASR heard. faster-whisper
@@ -290,6 +367,13 @@ def handler(job):
         if wav and os.path.exists(wav):
             os.unlink(wav)
 
+
+# cuBLAS only guarantees run-to-run reproducibility when it is given a fixed
+# workspace; without this, the same audio decodes differently between runs and
+# Whisper amplifies it - one differing timestamp token moves the next 30-second
+# window and re-decodes the rest of the file. Measured here as 620 vs 637 words
+# on identical input. Must be set before CUDA initialises.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import torch  # noqa: E402
 

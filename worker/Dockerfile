@@ -29,10 +29,17 @@ RUN pip install \
         "huggingface-hub" \
         "runpod"
 
+# NeMo's ASR extra carries Sortformer and the telephonic MSDD diarizer. numpy
+# stays capped below 2.5 because numba - a transitive dependency through
+# librosa - cannot import above it, and pip resolves that combination happily
+# and then fails at runtime.
+RUN pip install "numpy<2.5" "nemo_toolkit[asr]==2.7.3"
+
 # Fail the build, not the first paid request, if the dependency graph broke.
-RUN python -c "import ctranslate2, faster_whisper, speechbrain, sklearn, numpy, torch; \
+RUN python -c "import ctranslate2, faster_whisper, speechbrain, sklearn, numpy, numba, torch; \
+from nemo.collections.asr.models import SortformerEncLabelModel, NeuralDiarizer; \
 print('ct2', ctranslate2.__version__, '| torch', torch.__version__, \
-      '| numpy', numpy.__version__)"
+      '| numpy', numpy.__version__, '| numba', numba.__version__)"
 
 WORKDIR /app
 COPY pipeline/ /app/pipeline/
@@ -52,8 +59,34 @@ snapshot_download(repo_id='ivrit-ai/whisper-large-v3-ct2')"
 RUN python -c "\
 from pipeline.diarize import _get_encoder; _get_encoder(); import silero_vad; silero_vad.load_silero_vad(); print('ecapa baked')"
 
+# Sortformer: ungated, CC-BY-4.0, one .nemo file. Trained on Fisher / NIST SRE
+# / CALLHOME - 8 kHz telephone upsampled to 16 kHz, which is our exact signal.
+RUN mkdir -p /opt/nemo_models /opt/nemo_cfg && python -c "\
+import shutil; from huggingface_hub import hf_hub_download; \
+p = hf_hub_download(repo_id='nvidia/diar_streaming_sortformer_4spk-v2', \
+                    filename='diar_streaming_sortformer_4spk-v2.nemo'); \
+shutil.copy(p, '/opt/nemo_models/sortformer.nemo'); print('sortformer baked')"
+
+# Post-processing thresholds tuned on CALLHOME (8 kHz telephone), and NVIDIA's
+# telephonic inference preset - five window scales rather than one, so short
+# backchannels survive.
+ADD https://raw.githubusercontent.com/NVIDIA-NeMo/NeMo/main/examples/speaker_tasks/diarization/conf/post_processing/diar_streaming_sortformer_4spk-v2_callhome-part1.yaml /opt/nemo_cfg/callhome_pp.yaml
+ADD https://raw.githubusercontent.com/NVIDIA-NeMo/NeMo/main/examples/speaker_tasks/diarization/conf/inference/diar_infer_telephonic.yaml /opt/nemo_cfg/diar_infer_telephonic.yaml
+
+# MSDD's own weights, so the first request does not pay for the download.
+RUN python -c "\
+import nemo.collections.asr as na; \
+na.models.EncDecSpeakerLabelModel.from_pretrained('titanet_large'); \
+na.models.EncDecClassificationModel.from_pretrained('vad_multilingual_marblenet'); \
+na.models.msdd_models.EncDecDiarLabelModel.from_pretrained('diar_msdd_telephonic'); \
+print('msdd baked')"
+
 # Offline from here on: no HF round-trips, rate limits or outages at runtime.
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
-    ECAPA_DEVICE=cuda
+    ECAPA_DEVICE=cuda \
+    SORTFORMER_PATH=/opt/nemo_models/sortformer.nemo \
+    SORTFORMER_PP=/opt/nemo_cfg/callhome_pp.yaml \
+    MSDD_CONFIG=/opt/nemo_cfg/diar_infer_telephonic.yaml \
+    CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 CMD ["python", "-u", "/app/handler.py"]
