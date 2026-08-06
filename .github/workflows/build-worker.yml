@@ -1,0 +1,69 @@
+name: Build worker image
+
+# Builds the RunPod worker in the cloud and publishes it to GitHub's registry,
+# so no local Docker is needed and nothing multi-GB is uploaded from a home
+# connection. RunPod pulls the published image directly.
+#
+# No secrets required: every model in the image is ungated.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'worker/**'
+      - 'pipeline/**'
+      - '.github/workflows/build-worker.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ivrit-diarize-worker
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image carries several GB of model weights plus the CUDA base,
+      # which overflows a stock runner's disk.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./worker/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image published
+        run: |
+          echo "Deploy on RunPod Serverless with image:"
+          echo "  ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
