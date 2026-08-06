@@ -108,6 +108,10 @@ def process(source: Path, endpoint: str, creds: rp.Credentials, out_dir: Path,
     )
     parse_mod.write_text(transcript, out_dir / f"{stem}.txt")
     parse_mod.write_srt(transcript, out_dir / f"{stem}.srt")
+    # The view meant for human reading - a browser renders mixed
+    # Hebrew/English correctly, which no plain-text editor guarantees.
+    parse_mod.write_html(transcript, out_dir / f"{stem}.html",
+                         quality=out.get("quality"))
 
     q = out.get("quality", {})
     share: dict[str, float] = {}

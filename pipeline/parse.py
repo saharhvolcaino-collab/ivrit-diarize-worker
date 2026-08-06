@@ -205,17 +205,17 @@ LRI, PDI = "⁦", "⁩"  # isolate a left-to-right run from its neighbours
 
 
 def rtl(text: str) -> str:
-    """Make a mixed Hebrew/Latin line render correctly in an RTL paragraph.
+    """Clean a line for plain-text output.
 
-    Plain-text editors pick a line's direction from its first strong character
-    and let every embedded English word push the neighbours around. Two moves
-    fix both: an RLM up front pins the paragraph direction to RTL, and each
-    Latin/digit run is wrapped in FSI-style isolates so it renders internally
-    left-to-right without reordering the Hebrew around it.
+    First attempt injected RLM/isolate control characters so editors would
+    render mixed Hebrew/Latin correctly - and VS Code rendered every one of
+    them as a visible [U+200F] box, which was worse than the problem. Plain
+    text cannot be made to display bidirectional content reliably across
+    tools, so the .txt stays strictly clean (the model's own stray direction
+    marks still get stripped) and proper display lives in the HTML view,
+    where dir="rtl" solves this correctly.
     """
-    text = _BIDI_CONTROLS.sub("", text)
-    text = _LTR_RUN.sub(lambda m: f"{LRI}{m.group(0)}{PDI}", text)
-    return f"{RLM}{text}"
+    return _BIDI_CONTROLS.sub("", text)
 
 
 def _clock(seconds: float) -> str:
@@ -301,3 +301,82 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def write_html(t: Transcript, dest: str | Path,
+               label_map: dict[str, str] | None = None,
+               quality: dict | None = None) -> None:
+    """A readable RTL view of the call - the one meant for human eyes.
+
+    Plain text cannot render mixed Hebrew/English reliably in every editor;
+    a browser with dir="rtl" does it natively. Layout is a two-sided chat so
+    the speaker attribution is visible as shape, not just labels.
+    """
+    label_map = label_map or {}
+    order: list[str] = []
+    for turn in t.turns:
+        if turn.speaker not in order:
+            order.append(turn.speaker)
+
+    def esc(x: str) -> str:
+        return (x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    share: dict[str, float] = {}
+    for turn in t.turns:
+        share[turn.speaker] = share.get(turn.speaker, 0.0) + turn.duration
+    total = sum(share.values()) or 1.0
+
+    rows = []
+    for turn in t.turns:
+        side = "a" if order and turn.speaker == order[0] else "b"
+        name = esc(label_map.get(turn.speaker, turn.speaker))
+        rows.append(
+            f'<div class="msg {side}"><div class="meta">{name} · '
+            f'{_clock(turn.start)}</div>'
+            f'<div class="bubble">{esc(rtl(turn.text))}</div></div>'
+        )
+
+    verdict = (quality or {}).get("verdict", "")
+    problems = (quality or {}).get("problems", [])
+    q_html = ""
+    if verdict:
+        q_html = (
+            f'<div class="q {esc(verdict)}"><b>איכות: {esc(verdict)}</b>'
+            + "".join(f"<div>• {esc(p)}</div>" for p in problems)
+            + "</div>"
+        )
+
+    share_txt = " · ".join(
+        f"{esc(label_map.get(k, k))}: {100 * v / total:.0f}%"
+        for k, v in sorted(share.items(), key=lambda kv: -kv[1])
+    )
+
+    html = f"""<!doctype html><html dir="rtl" lang="he"><head><meta charset="utf-8">
+<title>{esc(t.source)}</title><style>
+:root {{ --a:#0f766e; --b:#b45309; --bg:#f6f7f9; --card:#fff; --ink:#131a21; --mut:#6b7785; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{ --bg:#0e141a; --card:#18212a; --ink:#e8edf2; --mut:#8695a3; --a:#5ec8b8; --b:#e0a458; }} }}
+* {{ box-sizing:border-box }}
+body {{ margin:0; background:var(--bg); color:var(--ink);
+  font:16px/1.7 "Segoe UI",Tahoma,sans-serif; padding:2rem 1rem; }}
+.wrap {{ max-width:46rem; margin:0 auto; }}
+h1 {{ font-size:1.05rem; word-break:break-all }}
+.sub {{ color:var(--mut); font-size:.85rem; margin-bottom:1.2rem }}
+.q {{ background:var(--card); border-inline-start:3px solid var(--b);
+  padding:.6rem .9rem; border-radius:4px; font-size:.85rem; margin-bottom:1.2rem }}
+.q.clean {{ border-color:var(--a) }}
+.msg {{ margin:.55rem 0; max-width:85% }}
+.msg.b {{ margin-inline-start:auto }}
+.meta {{ font-size:.72rem; color:var(--mut); margin-bottom:.15rem }}
+.msg.b .meta {{ text-align:left }}
+.bubble {{ background:var(--card); padding:.55rem .85rem; border-radius:10px;
+  border-inline-start:3px solid var(--a); unicode-bidi:plaintext }}
+.msg.b .bubble {{ border-inline-start:none; border-inline-end:3px solid var(--b) }}
+</style></head><body><div class="wrap">
+<h1>{esc(t.source)}</h1>
+<div class="sub">{t.duration_sec:.0f} שניות · {len(t.turns)} חילופים · {t.word_count} מילים
+ · ביטחון {t.mean_word_confidence:.3f} · {share_txt}</div>
+{q_html}
+{"".join(rows)}
+</div></body></html>"""
+    Path(dest).write_text(html, encoding="utf-8")
