@@ -190,6 +190,34 @@ def parse(raw_path: str | Path) -> Transcript:
     )
 
 
+import re
+
+# Anything that already tries to steer direction gets stripped before we set
+# our own: the ASR itself sometimes emits stray RLE marks, and mixing them
+# with ours multiplies the chaos instead of containing it.
+_BIDI_CONTROLS = re.compile(r"[‎‏‪-‮⁦-⁩؜]")
+# A Latin/digit run, including the joiners that keep emails and phone-like
+# tokens in one piece.
+_LTR_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .@_\-:/]*[A-Za-z0-9]|[A-Za-z0-9]")
+
+RLM = "‏"       # right-to-left mark: anchors the line's base direction
+LRI, PDI = "⁦", "⁩"  # isolate a left-to-right run from its neighbours
+
+
+def rtl(text: str) -> str:
+    """Make a mixed Hebrew/Latin line render correctly in an RTL paragraph.
+
+    Plain-text editors pick a line's direction from its first strong character
+    and let every embedded English word push the neighbours around. Two moves
+    fix both: an RLM up front pins the paragraph direction to RTL, and each
+    Latin/digit run is wrapped in FSI-style isolates so it renders internally
+    left-to-right without reordering the Hebrew around it.
+    """
+    text = _BIDI_CONTROLS.sub("", text)
+    text = _LTR_RUN.sub(lambda m: f"{LRI}{m.group(0)}{PDI}", text)
+    return f"{RLM}{text}"
+
+
 def _clock(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -214,7 +242,7 @@ def write_text(t: Transcript, dest: str | Path, label_map: dict[str, str] | None
     for turn in t.turns:
         name = label_map.get(turn.speaker, turn.speaker)
         lines.append(f"[{_clock(turn.start)}] {name}:")
-        lines.append(turn.text)
+        lines.append(rtl(turn.text))
         lines.append("")
     Path(dest).write_text("\n".join(lines), encoding="utf-8")
 
