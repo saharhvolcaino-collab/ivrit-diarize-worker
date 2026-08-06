@@ -27,7 +27,10 @@
       "Bash(curl -s \"https://raw.githubusercontent.com/saharhvolcaino-collab/ivrit-diarize-worker/main/worker/Dockerfile\")",
       "Bash(curl -s -o /dev/null -w \"  /handler.py -> %{http_code}\\\\n\" \"https://raw.githubusercontent.com/saharhvolcaino-collab/ivrit-diarize-worker/main/handler.py\")",
       "Bash(curl -s \"https://hub.docker.com/v2/repositories/pytorch/pytorch/tags?page_size=100&name=cuda12\")",
-      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\fix_dockerfile.py\")"
+      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\fix_dockerfile.py\")",
+      "Bash(RUNPOD_ENDPOINT_ID=snfaxi0dl8ugko python compare_diar.py Desktop/תמלול/Rec722_83_11-11-56_08-06-2026.wav Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --out out/engines)",
+      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-11-56_08-06-2026.wav /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --out out/engines)",
+      "Bash(python -m py_compile worker/handler.py)"
     ]
   }
 }

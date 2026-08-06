@@ -499,10 +499,17 @@ def split_buried_answers(
     """
     import torch
 
-    if centroids is None or centroids.shape[0] != 2:
+    # centroids may be None. In weak_voice mode the similarity veto is never
+    # consulted - loudness decides alone - so the voice signatures are dead
+    # weight there, and demanding them would bar every engine that does not
+    # produce ECAPA embeddings from a pass it does not need. Outside that
+    # mode the veto is the point, so no centroids means nothing to do.
+    if centroids is None:
+        if not weak_voice:
+            return words, 0
+    elif centroids.shape[0] != 2:
         return words, 0
 
-    encoder = _get_encoder()
     audio = _load_audio(audio_path)
     total = audio.size / SAMPLE_RATE
 
@@ -545,19 +552,25 @@ def split_buried_answers(
         return out, 0
 
     pieces = [audio[int(s * SAMPLE_RATE):int(e * SAMPLE_RATE)] for _, s, e, _, _ in jobs]
-    longest = max(p.size for p in pieces)
-    chunk = np.zeros((len(pieces), longest), dtype=np.float32)
-    lengths = []
-    for row, piece in enumerate(pieces):
-        chunk[row, :piece.size] = piece
-        lengths.append(piece.size / longest if longest else 1.0)
-    with torch.no_grad():
-        emb = encoder.encode_batch(
-            torch.from_numpy(chunk),
-            wav_lens=torch.tensor(lengths, dtype=torch.float32),
-        ).squeeze(1).cpu().numpy()
-    emb /= np.linalg.norm(emb, axis=1, keepdims=True) + 1e-9
-    sims = emb @ centroids.T
+
+    # Skipped entirely when there are no signatures to compare against, which
+    # also spares a batch through the encoder that nothing would have read.
+    sims = None
+    if centroids is not None:
+        encoder = _get_encoder()
+        longest = max(p.size for p in pieces)
+        chunk = np.zeros((len(pieces), longest), dtype=np.float32)
+        lengths = []
+        for row, piece in enumerate(pieces):
+            chunk[row, :piece.size] = piece
+            lengths.append(piece.size / longest if longest else 1.0)
+        with torch.no_grad():
+            emb = encoder.encode_batch(
+                torch.from_numpy(chunk),
+                wav_lens=torch.tensor(lengths, dtype=torch.float32),
+            ).squeeze(1).cpu().numpy()
+        emb /= np.linalg.norm(emb, axis=1, keepdims=True) + 1e-9
+        sims = emb @ centroids.T
 
     def _rms_db(x: np.ndarray) -> float:
         if x.size == 0:
@@ -573,7 +586,8 @@ def split_buried_answers(
         cur_k = int(current[-2:])
         other_k = 1 - cur_k
 
-        voice_veto = float(sims[row][cur_k] - sims[row][other_k]) > veto_margin
+        voice_veto = (sims is not None
+                      and float(sims[row][cur_k] - sims[row][other_k]) > veto_margin)
         gap = abs(
             _rms_db(audio[int(q_start * SAMPLE_RATE):int(q_end * SAMPLE_RATE)])
             - _rms_db(pieces[row])

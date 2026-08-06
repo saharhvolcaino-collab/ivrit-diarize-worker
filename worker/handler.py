@@ -248,6 +248,19 @@ def _run_nemo_engines(
 
             from pipeline import diarize as diar
             labelled = diar.realign_by_punctuation(labelled)
+
+            # The same conversational splitter the ECAPA chain gets. Without
+            # it this comparison was rigged: `buried_answers` is the metric,
+            # and only one arm had a pass whose entire job is to reduce it.
+            # A neural engine has no ECAPA centroids to offer, so it runs in
+            # weak_voice mode, where the question-mark prior decides and
+            # loudness arbitrates - no embeddings consulted, which is the
+            # whole reason these engines are here.
+            handed = 0
+            if num_speakers == 2:
+                labelled, handed = diar.split_buried_answers(
+                    wav, labelled, centroids=None, weak_voice=True)
+
             turns = diar.turns_from_words(labelled)
             report = quality.assess({"turns": turns}, expected_speakers=num_speakers)
 
@@ -260,6 +273,7 @@ def _run_nemo_engines(
                 "quality": report.to_dict(),
                 "meta": {"engine": name, "seconds": res.seconds,
                          "dropped_speech_sec": res.dropped_speech_sec,
+                         "answers_handed_over": handed,
                          "notes": res.notes},
             }
         except Exception as exc:
