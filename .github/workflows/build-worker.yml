@@ -41,6 +41,18 @@ jobs:
           large-packages: true
           swap-storage: true
 
+      # Move Docker's data root onto /mnt, which has an order of magnitude more
+      # space than / on a hosted runner. The full whisper-large-v3 model is
+      # twice the size of turbo and pushed the build over the limit on the
+      # root filesystem even after the reclaim step above.
+      - name: Relocate Docker storage to the large volume
+        run: |
+          sudo systemctl stop docker docker.socket || true
+          sudo mkdir -p /mnt/docker
+          echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
+          df -h / /mnt
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to ghcr.io
