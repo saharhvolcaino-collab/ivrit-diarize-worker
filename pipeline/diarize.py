@@ -440,6 +440,7 @@ def split_buried_answers(
     veto_margin: float = 0.06,
     loudness_gap_db: float = 6.0,
     max_tail_embed_sec: float = 2.0,
+    weak_voice: bool = False,
 ) -> tuple[list[dict], int]:
     """Hand the text after a mid-turn question to the other party.
 
@@ -552,7 +553,14 @@ def split_buried_answers(
             _rms_db(audio[int(q_start * SAMPLE_RATE):int(q_end * SAMPLE_RATE)])
             - _rms_db(pieces[row])
         )
-        if voice_veto and gap < loudness_gap_db:
+        if weak_voice:
+            # Degenerate clustering or near-identical voices: the signatures
+            # cannot be trusted in either direction, so loudness decides alone.
+            # Telephone parties sit at different levels; a same-speaker
+            # continuation does not jump levels mid-sentence.
+            if gap < 3.0:
+                continue
+        elif voice_veto and gap < loudness_gap_db:
             continue
         for idx in tail_idx:
             out[idx]["speaker"] = f"SPEAKER_{other_k:02d}"

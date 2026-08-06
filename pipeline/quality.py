@@ -86,7 +86,13 @@ def assess(transcript: dict, expected_speakers: int | None = 2) -> QualityReport
         duration = t["end"] - t["start"]
         n = len(t.get("words", []))
         if duration >= MIN_TURN_SEC_TO_JUDGE and n / max(duration, 1e-6) < MIN_WORDS_PER_SEC:
-            stretched.append(f"{t['text'][:40]} ({n} words over {duration:.0f}s)")
+            # Reading a phone number aloud is naturally slow - digit-heavy
+            # turns are dictation, not silence narrated over.
+            text = t.get("text", "")
+            digits = sum(ch.isdigit() for ch in text)
+            if digits >= max(4, len(text.replace(" ", "")) // 3):
+                continue
+            stretched.append(f"{text[:40]} ({n} words over {duration:.0f}s)")
 
     # A question followed by a full clause, inside one turn, is the other party
     # answering - absorbed because the diarizer never placed a boundary there.
@@ -148,12 +154,17 @@ def assess(transcript: dict, expected_speakers: int | None = 2) -> QualityReport
             f"{len(stretched)} turn(s) far below conversational speed, e.g. "
             f"\"{stretched[0]}\". These spans are mostly silence with text laid over them."
         )
+    # Judge buried answers by rate, not count. Thirty-four buried exchanges in
+    # a 345-turn call is the same 10% failure as one in ten - but an absolute
+    # threshold branded every long call unreliable while short calls with the
+    # same defect rate passed.
+    buried_rate = len(buried) / max(len(turns), 1)
     if buried:
+        severity = "widespread" if buried_rate >= 0.10 else "isolated"
         report.problems.append(
-            f"{len(buried)} turn(s) contain a question and its answer, e.g. "
-            f"\"{buried[0][:70]}\". The diarizer merged the two parties - speaker "
-            "labels in this transcript are not trustworthy even though the count "
-            "looks right."
+            f"{len(buried)} of {len(turns)} turns ({100 * buried_rate:.0f}%) contain "
+            f"a question and its answer ({severity}), e.g. \"{buried[0][:70]}\". "
+            "The diarizer merged the parties at these points."
         )
     # Imbalance alone proves nothing: one of our samples runs 88/12 and was
     # confirmed correct by ear. It only becomes evidence when several exchanges
@@ -169,8 +180,34 @@ def assess(transcript: dict, expected_speakers: int | None = 2) -> QualityReport
             f"{report.low_confidence_pct}% of words below {LOW_CONFIDENCE} confidence."
         )
 
+    # Special shapes first: an empty or near-empty result is its own category
+    # (a 0.24 s butt-dial is not "unreliable", it is an empty recording), and a
+    # genuinely one-sided recording (voicemail, IVR message) should say so
+    # rather than scream about a missing second speaker.
+    if report.words < 5:
+        report.verdict = "empty"
+        report.problems = ["Recording contains little or no speech - nothing to judge."]
+        return report
+
+    if (expected_speakers and report.speakers == 1 and report.buried_answers == 0
+            and report.words < 120):
+        report.verdict = "one-sided"
+        report.problems = [
+            "Short single-voice recording - likely a voicemail or message rather "
+            "than a failed two-party call. Verify by ear if it matters."
+        ]
+        return report
+
+    # Rate-aware verdict: isolated artefacts make a file worth a glance,
+    # widespread ones make it untrustworthy.
+    severe = (
+        (buried_rate >= 0.10 and len(buried) >= 3)
+        or (expected_speakers and report.speakers > expected_speakers)
+        or (len(buried) >= 3 and report.dominant_speaker_pct > 85)
+        or report.repeated_lines >= 3
+    )
     report.verdict = "clean" if not report.problems else (
-        "suspect" if len(report.problems) == 1 else "unreliable"
+        "unreliable" if severe else "suspect"
     )
     return report
 

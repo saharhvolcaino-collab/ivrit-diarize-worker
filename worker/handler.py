@@ -158,8 +158,18 @@ def handler(job):
                     wav, labelled, local.centroids)
             labelled = diar.realign_by_punctuation(labelled)
             if local.centroids is not None and num_speakers == 2:
+                # When the two voices barely separate - or one label swallowed
+                # the call - the centroids are not evidence, and the splitter
+                # must not let them veto. Loudness decides alone there.
+                pre = diar.turns_from_words(labelled)
+                share: dict[str, float] = {}
+                for t in pre:
+                    share[t["speaker"]] = share.get(t["speaker"], 0.0) + \
+                        (t["end"] - t["start"])
+                dominant = max(share.values()) / (sum(share.values()) or 1.0)
+                weak = local.separation < 0.15 or dominant > 0.85
                 labelled, handed = diar.split_buried_answers(
-                    wav, labelled, local.centroids)
+                    wav, labelled, local.centroids, weak_voice=weak)
 
             keep = ("word", "start", "end", "speaker", "probability")
             labelled = [{k: w.get(k) for k in keep} for w in labelled]

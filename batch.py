@@ -134,7 +134,7 @@ def _row_from_json(path: Path, f: Path) -> dict:
         return {"file": f.name, "status": "failed", "error": f"stale output: {exc}"}
 
 
-SEVERITY = {"unreliable": 0, "suspect": 1, "unknown": 2, "clean": 3}
+SEVERITY = {"unreliable": 0, "suspect": 1, "unknown": 2, "one-sided": 3, "empty": 4, "clean": 5}
 
 
 def write_report(rows: list[dict], out_dir: Path) -> Path:
@@ -142,8 +142,8 @@ def write_report(rows: list[dict], out_dir: Path) -> Path:
     failed = [r for r in rows if r["status"] != "ok"]
     ok.sort(key=lambda r: (SEVERITY.get(r["verdict"], 2), -r["buried"]))
 
-    clean = [r for r in ok if r["verdict"] == "clean"]
-    flagged = [r for r in ok if r["verdict"] != "clean"]
+    clean = [r for r in ok if r["verdict"] in ("clean", "empty", "one-sided")]
+    flagged = [r for r in ok if r["verdict"] not in ("clean", "empty", "one-sided")]
     total_audio_min = sum(r["duration_sec"] for r in ok) / 60
 
     lines = [
@@ -162,7 +162,8 @@ def write_report(rows: list[dict], out_dir: Path) -> Path:
         "|---|---|---|---|---|---|",
     ]
     for r in ok:
-        mark = {"clean": "✅", "suspect": "⚠️", "unreliable": "❌"}.get(r["verdict"], "?")
+        mark = {"clean": "✅", "suspect": "⚠️", "unreliable": "❌",
+                "empty": "⬜", "one-sided": "📢"}.get(r["verdict"], "?")
         lines.append(
             f"| {r['file']} | {mark} {r['verdict']} | {r['speakers']} "
             f"| {r['share']} | {r['buried']} | {r['confidence']:.3f} |"
