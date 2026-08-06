@@ -46,14 +46,20 @@ def collect(paths: list[str]) -> list[Path]:
     return [f for f in files if not f.name.endswith((".16k.wav", ".speech.wav"))]
 
 
-def process_all(files: list[Path], out_dir: Path, force: bool) -> list[dict]:
-    from run import process  # imported late so --report-only needs no RunPod creds
-
+def process_all(files: list[Path], out_dir: Path, force: bool,
+                use_gpu: bool = True) -> list[dict]:
     creds = rp.load_credentials()
     rows: list[dict] = []
 
+    endpoint = None
+    if use_gpu:
+        import gpu
+        endpoint = gpu._endpoint_id(None)
+    else:
+        from run import process as cpu_process
+
     for i, f in enumerate(files, 1):
-        result_path = out_dir / f"{f.stem}.json"
+        result_path = out_dir / (f"{f.stem}.gpu.json" if use_gpu else f"{f.stem}.json")
         if result_path.exists() and not force:
             print(f"[{i}/{len(files)}] {f.name} - already processed, skipping "
                   "(--force to redo)")
@@ -63,7 +69,12 @@ def process_all(files: list[Path], out_dir: Path, force: bool) -> list[dict]:
         print(f"[{i}/{len(files)}] {f.name}")
         started = time.time()
         try:
-            result = process(f, out_dir, creds=creds)
+            if use_gpu:
+                import gpu
+                out = gpu.process(f, endpoint, creds, out_dir)
+                result = _gpu_to_result(out)
+            else:
+                result = cpu_process(f, out_dir, creds=creds)
             rows.append(_row_from_result(result, f, time.time() - started))
         except Exception as exc:
             print(f"    FAILED: {type(exc).__name__}: {exc}")
@@ -73,6 +84,19 @@ def process_all(files: list[Path], out_dir: Path, force: bool) -> list[dict]:
                 "error": f"{type(exc).__name__}: {exc}",
             })
     return rows
+
+
+def _gpu_to_result(out: dict) -> dict:
+    """Adapt the worker's response to the shape the report reader expects."""
+    return {
+        "quality": out.get("quality", {}),
+        "turns": [
+            {"speaker": t["speaker"], "start": t["start"], "end": t["end"],
+             "text": t.get("text", "")}
+            for t in out.get("turns", [])
+        ],
+        "duration_sec": out.get("meta", {}).get("duration_sec", 0.0),
+    }
 
 
 def _row_from_result(result: dict, f: Path, wall: float) -> dict:
@@ -102,7 +126,10 @@ def _row_from_result(result: dict, f: Path, wall: float) -> dict:
 
 def _row_from_json(path: Path, f: Path) -> dict:
     try:
-        return _row_from_result(json.loads(path.read_text(encoding="utf-8")), f, 0.0)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if "meta" in data and "quality" in data:   # worker response shape
+            data = _gpu_to_result(data)
+        return _row_from_result(data, f, 0.0)
     except Exception as exc:
         return {"file": f.name, "status": "failed", "error": f"stale output: {exc}"}
 
@@ -175,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="out")
     p.add_argument("--force", action="store_true", help="Reprocess existing outputs")
     p.add_argument("--report-only", action="store_true")
+    p.add_argument("--cpu", action="store_true",
+                   help="Use the old local pipeline instead of the GPU worker")
     args = p.parse_args(argv)
 
     files = collect(args.paths)
@@ -185,10 +214,14 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.report_only:
-        rows = [_row_from_json(out_dir / f"{f.stem}.json", f)
-                for f in files if (out_dir / f"{f.stem}.json").exists()]
+        rows = []
+        for f in files:
+            for name in (f"{f.stem}.gpu.json", f"{f.stem}.json"):
+                if (out_dir / name).exists():
+                    rows.append(_row_from_json(out_dir / name, f))
+                    break
     else:
-        rows = process_all(files, out_dir, args.force)
+        rows = process_all(files, out_dir, args.force, use_gpu=not args.cpu)
 
     report = write_report(rows, out_dir)
     print(f"\nreport -> {report}")
