@@ -51,6 +51,12 @@ jobs:
           sudo mkdir -p /mnt/docker
           echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
           sudo systemctl start docker
+          # BuildKit stages the compressed blobs it pushes through TMPDIR, which
+          # lives on / by default. The previous run died with an empty step list
+          # and no error - the signature of a runner losing its disk, not of a
+          # build failing - so the scratch space moves to the large volume too.
+          sudo mkdir -p /mnt/tmp && sudo chmod 777 /mnt/tmp
+          echo "TMPDIR=/mnt/tmp" >> $GITHUB_ENV
           df -h / /mnt
 
       - uses: docker/setup-buildx-action@v3
@@ -72,8 +78,19 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # No GitHub Actions cache. It is capped at 10 GB per repository and
+          # this image is well past that once NeMo and four sets of model
+          # weights are in it - the export blew the runner's disk and the job
+          # was cancelled with no error to read. Pulling the previous image as
+          # a cache source costs one registry download and stays within budget.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          provenance: false
+
+      # If a future build dies the same silent way, this is the evidence that
+      # says whether it ran out of room or failed for a reason worth reading.
+      - name: Disk after build
+        if: always()
+        run: df -h / /mnt
 
       - name: Image published
         run: |

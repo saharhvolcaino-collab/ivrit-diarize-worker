@@ -279,23 +279,27 @@ def handler(job):
             if isinstance(engines, str):
                 engines = [engines]
             extra = _run_nemo_engines(wav, words, engines, num_speakers)
-            if extra and "ecapa" not in engines:
-                # Caller asked only for NeMo engines - return the first as the
-                # primary result and skip the local chain entirely.
-                primary = extra[engines[0]]
+            # Promote the first engine that actually produced turns. Naming the
+            # first requested one unconditionally would crash on a failed
+            # engine, whose entry holds an error and nothing else - and MSDD is
+            # now allowed to be absent from the image entirely.
+            lead = next((e for e in engines
+                         if e in extra and "error" not in extra[e]), None)
+            if lead and "ecapa" not in engines:
+                primary = extra[lead]
                 result.update({
                     "words": primary["words"],
                     "turns": primary["turns"],
                     "speakers": primary["speakers"],
                     "quality": primary["quality"],
-                    "diarization": {"engine": engines[0], **primary["meta"]},
+                    "diarization": {"engine": lead, **primary["meta"]},
                 })
-                if len(extra) > 1:
-                    result["alternates"] = {
-                        k: {"turns": v["turns"], "quality": v["quality"],
-                            "meta": v["meta"]}
-                        for k, v in extra.items() if k != engines[0]
-                    }
+                result["alternates"] = {
+                    k: {"turns": v.get("turns", []),
+                        "quality": v.get("quality", {}),
+                        "meta": v.get("meta") or {"error": v.get("error")}}
+                    for k, v in extra.items() if k != lead
+                }
                 result["meta"]["total_sec"] = round(time.time() - started, 2)
                 return result
 
@@ -356,6 +360,17 @@ def handler(job):
                     "notes": local.notes,
                 },
             })
+
+            # ECAPA leads when it was asked for, but the NeMo runs already
+            # happened over these same words - dropping them would throw away
+            # the only comparison that holds the transcript constant.
+            if extra:
+                result["alternates"] = {
+                    k: {"turns": v.get("turns", []),
+                        "quality": v.get("quality", {}),
+                        "meta": v.get("meta") or {"error": v.get("error")}}
+                    for k, v in extra.items()
+                }
 
         result["meta"]["total_sec"] = round(time.time() - started, 2)
         return result

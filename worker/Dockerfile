@@ -1,9 +1,13 @@
 # Hebrew call transcription + speaker attribution, one image.
 #
-# Deliberately lean: no NeMo, no pyannote, no gated models, no tokens. The
-# diarization chain here (ECAPA windows -> purified clustering -> per-word
-# refinement -> conversational splitting) was validated on real recordings
-# before being promoted to GPU, and every model in it is ungated.
+# Three diarizers ship together so the transcript can pick a winner instead of
+# us picking one on reputation: our own ECAPA window chain, NeMo's Sortformer,
+# and NeMo's telephonic MSDD. Every model is ungated - no tokens, no licence
+# acceptance, nothing that can expire and break a cold start.
+#
+# The image is large and the build runs on a hosted runner with a finite disk,
+# so caches are purged in the layer that creates them rather than at the end
+# (a later `rm` cannot shrink an earlier layer).
 #
 # Build from the REPO ROOT (the pipeline/ package is copied in):
 #   docker build -f worker/Dockerfile -t ivrit-diarize-worker .
@@ -33,11 +37,21 @@ RUN pip install \
 # stays capped below 2.5 because numba - a transitive dependency through
 # librosa - cannot import above it, and pip resolves that combination happily
 # and then fails at runtime.
-RUN pip install "numpy<2.5" "nemo_toolkit[asr]==2.7.3"
+#
+# The base image is a `runtime` tag and ships no compiler, but several of
+# NeMo's transitive dependencies have no wheel for this interpreter and build
+# from source. The toolchain is installed and removed inside this one layer so
+# ~250 MB of gcc does not ride along to every worker.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && pip install "numpy<2.5" "nemo_toolkit[asr]==2.7.3" \
+    && apt-get purge -y build-essential && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
 
 # Fail the build, not the first paid request, if the dependency graph broke.
+# Sortformer is required; the import is unguarded on purpose. MSDD is checked
+# separately below because it is allowed to be missing.
 RUN python -c "import ctranslate2, faster_whisper, speechbrain, sklearn, numpy, numba, torch; \
-from nemo.collections.asr.models import SortformerEncLabelModel, NeuralDiarizer; \
+from nemo.collections.asr.models import SortformerEncLabelModel; \
 print('ct2', ctranslate2.__version__, '| torch', torch.__version__, \
       '| numpy', numpy.__version__, '| numba', numba.__version__)"
 
@@ -61,11 +75,14 @@ from pipeline.diarize import _get_encoder; _get_encoder(); import silero_vad; si
 
 # Sortformer: ungated, CC-BY-4.0, one .nemo file. Trained on Fisher / NIST SRE
 # / CALLHOME - 8 kHz telephone upsampled to 16 kHz, which is our exact signal.
+# The HF cache copy is deleted in the same layer; keeping both would carry a
+# second copy of the weights in the published image for no benefit.
 RUN mkdir -p /opt/nemo_models /opt/nemo_cfg && python -c "\
 import shutil; from huggingface_hub import hf_hub_download; \
 p = hf_hub_download(repo_id='nvidia/diar_streaming_sortformer_4spk-v2', \
                     filename='diar_streaming_sortformer_4spk-v2.nemo'); \
-shutil.copy(p, '/opt/nemo_models/sortformer.nemo'); print('sortformer baked')"
+shutil.copy(p, '/opt/nemo_models/sortformer.nemo'); print('sortformer baked')" \
+    && rm -rf /root/.cache/huggingface/hub/models--nvidia--diar_streaming_sortformer_4spk-v2
 
 # Post-processing thresholds tuned on CALLHOME (8 kHz telephone), and NVIDIA's
 # telephonic inference preset - five window scales rather than one, so short
@@ -74,12 +91,19 @@ ADD https://raw.githubusercontent.com/NVIDIA-NeMo/NeMo/main/examples/speaker_tas
 ADD https://raw.githubusercontent.com/NVIDIA-NeMo/NeMo/main/examples/speaker_tasks/diarization/conf/inference/diar_infer_telephonic.yaml /opt/nemo_cfg/diar_infer_telephonic.yaml
 
 # MSDD's own weights, so the first request does not pay for the download.
+#
+# Deliberately non-fatal. NVIDIA is retiring the clustering diarization stack
+# in favour of Sortformer, so these checkpoints may disappear from NGC without
+# notice. MSDD is a comparison arm, not the product - losing it should cost us
+# the arm, not the whole image. The marker file tells the runtime which is the
+# case, so a missing engine is reported honestly instead of failing per request.
 RUN python -c "\
 import nemo.collections.asr as na; \
 na.models.EncDecSpeakerLabelModel.from_pretrained('titanet_large'); \
 na.models.EncDecClassificationModel.from_pretrained('vad_multilingual_marblenet'); \
 na.models.msdd_models.EncDecDiarLabelModel.from_pretrained('diar_msdd_telephonic'); \
-print('msdd baked')"
+print('msdd baked')" && touch /opt/nemo_models/msdd.ok \
+    || echo 'MSDD unavailable at build time - engine will report itself missing'
 
 # Offline from here on: no HF round-trips, rate limits or outages at runtime.
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \

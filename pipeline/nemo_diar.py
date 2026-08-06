@@ -191,6 +191,16 @@ def diarize_msdd(audio_path: str | Path, num_speakers: int = 2) -> NemoResult:
     the largest single error source in clustering-based diarization.
     """
     import time
+
+    # The image builds MSDD on a best-effort basis: NVIDIA is retiring the
+    # clustering stack, and its checkpoints can vanish from NGC between builds.
+    # Say so plainly rather than surfacing a from_pretrained stack trace, and
+    # never reach for the network here - the runtime is offline by design.
+    if not Path(os.environ.get("MSDD_MARKER", "/opt/nemo_models/msdd.ok")).exists():
+        raise RuntimeError(
+            "MSDD weights were not baked into this image (NVIDIA is retiring "
+            "the clustering diarizer). Use sortformer or ecapa.")
+
     from omegaconf import OmegaConf
     from nemo.collections.asr.models import NeuralDiarizer
 
