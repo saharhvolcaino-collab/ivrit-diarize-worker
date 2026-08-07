@@ -33,7 +33,8 @@ ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
 
 
 def _submit(blob: str, endpoint: str, creds, engines: list[str],
-            num_speakers: int | None = 2, align: str | None = None) -> dict:
+            num_speakers: int | None = 2, align: str | None = None,
+            align_min_score: float = 0.0) -> dict:
     payload = {"input": {
         "audio_base64": blob,
         "audio_format": "opus",
@@ -42,6 +43,7 @@ def _submit(blob: str, endpoint: str, creds, engines: list[str],
         "num_speakers": num_speakers,
         "engines": engines,
         "align": align,
+        "align_min_score": align_min_score,
     }}
     job = rp._request(f"{API}/{endpoint}/run", creds.api_key, payload)
     state = rp.poll(rp.Credentials(api_key=creds.api_key, endpoint_id=endpoint),
@@ -62,7 +64,8 @@ def _row(name: str, q: dict, meta: dict | None = None) -> str:
 
 
 def compare(audio: Path, endpoint: str, creds, out_dir: Path,
-            num_speakers: int | None = 2, align: str | None = None) -> dict:
+            num_speakers: int | None = 2, align: str | None = None,
+            align_min_score: float = 0.0) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n=== {audio.name} ===")
 
@@ -71,7 +74,8 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
 
     started = time.time()
     # One request, every engine: same audio, same words, same GPU state.
-    out = _submit(blob, endpoint, creds, ENGINES, num_speakers, align)
+    out = _submit(blob, endpoint, creds, ENGINES, num_speakers, align,
+                  align_min_score)
     (out_dir / f"{audio.stem}.compare.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -154,6 +158,9 @@ def main(argv: list[str] | None = None) -> int:
                    help='"auto" lets each engine count the speakers itself')
     p.add_argument("--align", default=None, choices=[None, "ctc"],
                    help="ctc = re-time words by forced alignment (whisperX's way)")
+    p.add_argument("--align-min-score", type=float, default=0.0,
+                   help="only accept alignments at least this confident; "
+                        "below it a word keeps the timestamp it already had")
     args = p.parse_args(argv)
 
     creds = rp.load_credentials()
@@ -165,7 +172,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             n = None if args.speakers in ("auto", "", "none") else int(args.speakers)
             summary[Path(item).name] = compare(
-                Path(item), endpoint, creds, out_dir, n, args.align)
+                Path(item), endpoint, creds, out_dir, n, args.align,
+                args.align_min_score)
         except Exception as exc:
             print(f"  ERROR {Path(item).name}: {exc}")
 
