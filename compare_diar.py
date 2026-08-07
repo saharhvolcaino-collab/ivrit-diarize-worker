@@ -33,7 +33,7 @@ ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
 
 
 def _submit(blob: str, endpoint: str, creds, engines: list[str],
-            num_speakers: int | None = 2) -> dict:
+            num_speakers: int | None = 2, align: str | None = None) -> dict:
     payload = {"input": {
         "audio_base64": blob,
         "audio_format": "opus",
@@ -41,6 +41,7 @@ def _submit(blob: str, endpoint: str, creds, engines: list[str],
         "diarize": True,
         "num_speakers": num_speakers,
         "engines": engines,
+        "align": align,
     }}
     job = rp._request(f"{API}/{endpoint}/run", creds.api_key, payload)
     state = rp.poll(rp.Credentials(api_key=creds.api_key, endpoint_id=endpoint),
@@ -61,7 +62,7 @@ def _row(name: str, q: dict, meta: dict | None = None) -> str:
 
 
 def compare(audio: Path, endpoint: str, creds, out_dir: Path,
-            num_speakers: int | None = 2) -> dict:
+            num_speakers: int | None = 2, align: str | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n=== {audio.name} ===")
 
@@ -70,7 +71,7 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
 
     started = time.time()
     # One request, every engine: same audio, same words, same GPU state.
-    out = _submit(blob, endpoint, creds, ENGINES, num_speakers)
+    out = _submit(blob, endpoint, creds, ENGINES, num_speakers, align)
     (out_dir / f"{audio.stem}.compare.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -85,6 +86,10 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
                          "turns": alt.get("turns", []),
                          "meta": alt.get("meta", {})}
 
+    al = (out.get("meta") or {}).get("alignment")
+    if al:
+        print(f"  alignment: {al['engine']} moved {al['moved']} words, "
+              f"mean score {al['mean_score']}, {al['failed_chunks']} chunk(s) failed")
     print(f"  {'engine':12} {'spk':>4} {'turns':>6} {'buried':>7} "
           f"{'domin':>8} {'time':>7}  verdict")
     print("  " + "-" * 62)
@@ -144,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--endpoint", default=None)
     p.add_argument("--speakers", default="2",
                    help='"auto" lets each engine count the speakers itself')
+    p.add_argument("--align", default=None, choices=[None, "ctc"],
+                   help="ctc = re-time words by forced alignment (whisperX's way)")
     args = p.parse_args(argv)
 
     creds = rp.load_credentials()
@@ -155,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             n = None if args.speakers in ("auto", "", "none") else int(args.speakers)
             summary[Path(item).name] = compare(
-                Path(item), endpoint, creds, out_dir, n)
+                Path(item), endpoint, creds, out_dir, n, args.align)
         except Exception as exc:
             print(f"  ERROR {Path(item).name}: {exc}")
 

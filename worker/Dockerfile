@@ -118,6 +118,14 @@ snapshot_download(repo_id='ivrit-ai/whisper-large-v3-ct2')"
 RUN python -c "\
 from pipeline.diarize import _get_encoder; _get_encoder(); import silero_vad; silero_vad.load_silero_vad(); print('ecapa baked')"
 
+# Hebrew CTC alignment model - what whisperX hard-codes for `--language he`.
+# Used to re-time words against the waveform instead of trusting Whisper's
+# attention-based timestamps. Baked because it is ungated and small next to
+# everything else here; whether it actually beats what we have on 8 kHz
+# telephone audio is a measurement, not an assumption - it was trained on
+# clean 16 kHz broadcast speech.
+RUN python -c "from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor; m = 'imvladikon/wav2vec2-xls-r-300m-hebrew'; Wav2Vec2Processor.from_pretrained(m); Wav2Vec2ForCTC.from_pretrained(m); print('hebrew ctc aligner baked')"
+
 # Sortformer: ungated, CC-BY-4.0, one .nemo file. Trained on Fisher / NIST SRE
 # / CALLHOME - 8 kHz telephone upsampled to 16 kHz, which is our exact signal.
 # The HF cache copy is deleted in the same layer; keeping both would carry a

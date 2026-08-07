@@ -38,7 +38,12 @@
       "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\auto_speakers.py\")",
       "Bash(python -m py_compile pipeline/diarize.py worker/handler.py)",
       "Bash(timeout 900 python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec720_76_09-27-51_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --out out/probe)",
-      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-11-56_08-06-2026.wav /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --out out/engines_auto)"
+      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-11-56_08-06-2026.wav /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --out out/engines_auto)",
+      "Bash(curl -sL -o __main__.py \"https://raw.githubusercontent.com/m-bain/whisperX/main/whisperx/__main__.py\")",
+      "WebFetch(domain:mfa-models.readthedocs.io)",
+      "Bash(curl -sL -o README.md \"https://raw.githubusercontent.com/m-bain/whisperX/main/README.md\")",
+      "Bash(curl -sL \"https://api.github.com/repos/m-bain/whisperX/contents/whisperx/assets\")",
+      "Bash(python -m py_compile pipeline/ctc_align.py)"
     ]
   }
 }

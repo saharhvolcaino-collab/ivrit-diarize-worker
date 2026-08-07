@@ -331,6 +331,26 @@ def handler(job):
                 result["meta"].setdefault("notes", []).append(
                     f"snapped {snapped} word timestamp(s) onto measured speech")
 
+            # Optional second opinion on timing: whisperX's approach, which
+            # derives word boundaries from the waveform via CTC forced
+            # alignment rather than from decoder attention. Requested rather
+            # than default, because the only Hebrew alignment model available
+            # never saw telephone audio and the published evidence has
+            # wav2vec2 alignment losing to Whisper's own DTW under noise. It
+            # runs after snapping, so if it declines a word that word keeps a
+            # timestamp that has already been corrected.
+            if job_input.get("align") == "ctc":
+                from pipeline import ctc_align
+                rep = ctc_align.align_words(
+                    wav, words,
+                    min_score=float(job_input.get("align_min_score", 0.0)))
+                words = rep.words
+                result["meta"]["alignment"] = {
+                    "engine": "ctc", "model": ctc_align.MODEL_ID,
+                    "moved": rep.moved, "mean_score": round(rep.mean_score, 3),
+                    "failed_chunks": rep.failed_chunks, "notes": rep.notes,
+                }
+
             # Sortformer and MSDD both replace the sliding-window embedder with
             # a network that segments at frame resolution and was trained on
             # telephone speech. They are requested by name so one call can run
