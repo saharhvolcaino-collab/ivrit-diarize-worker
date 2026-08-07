@@ -33,7 +33,7 @@ ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
 
 
 def _submit(blob: str, endpoint: str, creds, engines: list[str],
-            num_speakers: int = 2) -> dict:
+            num_speakers: int | None = 2) -> dict:
     payload = {"input": {
         "audio_base64": blob,
         "audio_format": "opus",
@@ -60,7 +60,8 @@ def _row(name: str, q: dict, meta: dict | None = None) -> str:
             f"{q.get('verdict', '?')}")
 
 
-def compare(audio: Path, endpoint: str, creds, out_dir: Path) -> dict:
+def compare(audio: Path, endpoint: str, creds, out_dir: Path,
+            num_speakers: int | None = 2) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n=== {audio.name} ===")
 
@@ -69,7 +70,7 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path) -> dict:
 
     started = time.time()
     # One request, every engine: same audio, same words, same GPU state.
-    out = _submit(blob, endpoint, creds, ENGINES)
+    out = _submit(blob, endpoint, creds, ENGINES, num_speakers)
     (out_dir / f"{audio.stem}.compare.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -99,7 +100,9 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path) -> dict:
         for n in r["meta"].get("notes") or []:
             print(f"    [!] {n}")
 
-        # Write each engine's transcript so the text can be read side by side.
+        # One directory per engine, same filename inside each. Reading the
+        # same call across methods is then a matter of opening the same name
+        # in two folders, rather than picking suffixes apart in one listing.
         turns = [parse_mod.Turn(speaker=t["speaker"], start=t["start"],
                                 end=t["end"], text=t.get("text", ""), words=[])
                  for t in r["turns"]]
@@ -113,8 +116,10 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path) -> dict:
                 low_confidence_words=r["quality"].get("low_confidence_words", 0),
                 unattributed_words=0,
             )
-            parse_mod.write_text(t_obj, out_dir / f"{audio.stem}.{name}.txt")
-            parse_mod.write_html(t_obj, out_dir / f"{audio.stem}.{name}.html",
+            eng_dir = out_dir / name
+            eng_dir.mkdir(parents=True, exist_ok=True)
+            parse_mod.write_text(t_obj, eng_dir / f"{audio.stem}.txt")
+            parse_mod.write_html(t_obj, eng_dir / f"{audio.stem}.html",
                                  quality=r["quality"])
 
     best = min(
@@ -137,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("audio", nargs="+")
     p.add_argument("--out", default="out/diarcmp")
     p.add_argument("--endpoint", default=None)
+    p.add_argument("--speakers", default="2",
+                   help='"auto" lets each engine count the speakers itself')
     args = p.parse_args(argv)
 
     creds = rp.load_credentials()
@@ -146,7 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     summary: dict[str, dict] = {}
     for item in args.audio:
         try:
-            summary[Path(item).name] = compare(Path(item), endpoint, creds, out_dir)
+            n = None if args.speakers in ("auto", "", "none") else int(args.speakers)
+            summary[Path(item).name] = compare(
+                Path(item), endpoint, creds, out_dir, n)
         except Exception as exc:
             print(f"  ERROR {Path(item).name}: {exc}")
 

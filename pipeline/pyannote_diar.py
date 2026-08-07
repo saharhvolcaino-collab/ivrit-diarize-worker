@@ -175,12 +175,21 @@ def _iter_turns(output):
             yield segment.start, segment.end, speaker
 
 
-def diarize(audio_path: str | Path, num_speakers: int = 2,
+def diarize(audio_path: str | Path, num_speakers: int | None = 2,
             engine: str = "pyannote") -> Result:
+    """num_speakers=None asks the pipeline to count the speakers itself.
+
+    pyannote estimates the count from the audio when it is not given one -
+    clustering the segmentation output and choosing the number of clusters
+    rather than being handed it. Passing 2 overrides that judgement, which is
+    right when a call is known to be two-party and wrong the moment a
+    supervisor joins or a third line is conferenced in.
+    """
     t0 = time.time()
     pipeline = _load(engine)
 
-    output = pipeline(_as_waveform(audio_path), num_speakers=num_speakers)
+    kwargs = {} if num_speakers is None else {"num_speakers": num_speakers}
+    output = pipeline(_as_waveform(audio_path), **kwargs)
 
     raw = [Turn(round(s, 3), round(e, 3), spk)
            for s, e, spk in _iter_turns(output) if e > s]
@@ -195,7 +204,14 @@ def diarize(audio_path: str | Path, num_speakers: int = 2,
         t.speaker = rename[t.speaker]
 
     notes = []
-    if len(rename) > num_speakers:
+    if num_speakers is None:
+        held = {}
+        for t in raw:
+            held[t.speaker] = held.get(t.speaker, 0.0) + (t.end - t.start)
+        notes.append(
+            f"counted {len(rename)} speaker(s) from the audio; "
+            + ", ".join(f"{k}={v:.0f}s" for k, v in sorted(held.items())))
+    elif len(rename) > num_speakers:
         extra = sorted(rename.values())[num_speakers:]
         held = sum(t.end - t.start for t in raw if t.speaker in extra)
         notes.append(

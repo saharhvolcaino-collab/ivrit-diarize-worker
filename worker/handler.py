@@ -256,13 +256,18 @@ def _run_nemo_engines(
             # weak_voice mode, where the question-mark prior decides and
             # loudness arbitrates - no embeddings consulted, which is the
             # whole reason these engines are here.
+            # Only defined for a two-party call. Under auto counting that is
+            # a property of the result, not of the request, so it is decided
+            # by what the engine actually found.
             handed = 0
-            if num_speakers == 2:
+            found = len({w.get("speaker") for w in labelled if w.get("speaker")})
+            if found == 2:
                 labelled, handed = diar.split_buried_answers(
                     wav, labelled, centroids=None, weak_voice=True)
 
             turns = diar.turns_from_words(labelled)
-            report = quality.assess({"turns": turns}, expected_speakers=num_speakers)
+            report = quality.assess({"turns": turns},
+                                    expected_speakers=num_speakers or found)
 
             out[name] = {
                 "words": labelled,
@@ -299,7 +304,13 @@ def handler(job):
             from pipeline import diarize as diar
             from pipeline import quality
 
-            num_speakers = int(job_input.get("num_speakers", 2))
+            # num_speakers may be omitted, null or "auto" to let each engine
+            # count the speakers itself rather than be handed a number. Every
+            # engine here can do that; forcing 2 is right for a call known to
+            # be two-party and wrong the moment a third person joins.
+            raw_n = job_input.get("num_speakers", 2)
+            num_speakers = (None if raw_n in (None, "auto", "")
+                            else int(raw_n))
 
             # Sortformer and MSDD both replace the sliding-window embedder with
             # a network that segments at frame resolution and was trained on
@@ -351,7 +362,8 @@ def handler(job):
                 labelled, flips = diar.refine_word_speakers(
                     wav, labelled, local.centroids)
             labelled = diar.realign_by_punctuation(labelled)
-            if local.centroids is not None and num_speakers == 2:
+            found = len(local.speakers) or 2
+            if local.centroids is not None and found == 2:
                 # When the two voices barely separate - or one label swallowed
                 # the call - the centroids are not evidence, and the splitter
                 # must not let them veto. Loudness decides alone there.
@@ -370,7 +382,7 @@ def handler(job):
             turns = diar.turns_from_words(labelled)
 
             report = quality.assess(
-                {"turns": turns}, expected_speakers=num_speakers)
+                {"turns": turns}, expected_speakers=num_speakers or found)
 
             result.update({
                 "words": labelled,

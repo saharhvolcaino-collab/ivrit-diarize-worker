@@ -106,6 +106,36 @@ def _load_sortformer():
     return _sortformer
 
 
+def _active_tracks(probs: np.ndarray, min_sec: float = 2.0
+                   ) -> tuple[np.ndarray, float, list[str]]:
+    """Let the model say how many people it heard, instead of being told.
+
+    Sortformer decides speaker count for itself - four output tracks, each
+    either carrying a voice or staying near zero. Forcing two throws away that
+    judgement, and on a call where a supervisor joins or a third party is
+    conferenced in, the discarded track is a real person whose words then get
+    attributed to someone else.
+
+    So the only filter here is duration: a track holding less than min_sec of
+    speech across the whole recording is treated as leakage rather than a
+    participant. Two seconds is deliberately low - a backchannel speaker who
+    only says "yes, correct" twice is still a speaker, and the count is
+    reported rather than hidden, so an implausible answer is visible instead
+    of silently applied.
+    """
+    active = (probs > 0.5).sum(axis=0)
+    keep = np.where(active * FRAME_SEC >= min_sec)[0]
+    if keep.size == 0:                       # nothing cleared the bar
+        keep = np.array([int(np.argmax(active))])
+    dropped = sorted(set(range(probs.shape[1])) - set(keep.tolist()))
+    dropped_sec = float(active[dropped].sum() * FRAME_SEC) if dropped else 0.0
+
+    notes = [f"counted {keep.size} speaker(s) from the audio; "
+             + ", ".join(f"track {int(t)}={active[t] * FRAME_SEC:.0f}s"
+                         for t in keep)]
+    return probs[:, np.sort(keep)], dropped_sec, notes
+
+
 def _collapse_tracks(probs: np.ndarray, n: int) -> tuple[np.ndarray, float, list[str]]:
     """Reduce Sortformer's four output tracks to the n speakers we expect.
 
@@ -151,7 +181,9 @@ def _probs_to_turns(probs2: np.ndarray, min_dur: float = 0.20) -> list[Turn]:
     return turns
 
 
-def diarize_sortformer(audio_path: str | Path, num_speakers: int = 2) -> NemoResult:
+def diarize_sortformer(audio_path: str | Path,
+                       num_speakers: int | None = 2) -> NemoResult:
+    """num_speakers=None lets Sortformer report the count it actually heard."""
     import time
     import torch
 
@@ -167,7 +199,9 @@ def diarize_sortformer(audio_path: str | Path, num_speakers: int = 2) -> NemoRes
                 verbose=False,
             )
         probs = tensors[0].squeeze(0).float().cpu().numpy()
-        probs2, dropped, notes = _collapse_tracks(probs, num_speakers)
+        probs2, dropped, notes = (
+            _active_tracks(probs) if num_speakers is None
+            else _collapse_tracks(probs, num_speakers))
         turns = _probs_to_turns(probs2)
         return NemoResult(
             turns=turns,
@@ -184,7 +218,8 @@ def diarize_sortformer(audio_path: str | Path, num_speakers: int = 2) -> NemoRes
 # ----------------------------------------------------------------------- msdd
 
 
-def diarize_msdd(audio_path: str | Path, num_speakers: int = 2) -> NemoResult:
+def diarize_msdd(audio_path: str | Path,
+                 num_speakers: int | None = 2) -> NemoResult:
     """NVIDIA's telephonic clustering diarizer, via its manifest-driven API.
 
     Unlike Sortformer this one takes the speaker count directly, which removes
@@ -217,7 +252,7 @@ def diarize_msdd(audio_path: str | Path, num_speakers: int = 2) -> NemoResult:
             "text": "-",
             # Giving the count turns speaker counting from a guess into a
             # constraint - the single biggest lever a clustering diarizer has.
-            "num_speakers": num_speakers,
+            "num_speakers": num_speakers,   # null tells NeMo to estimate
             "rttm_filepath": None,
             "uem_filepath": None,
         }) + "\n", encoding="utf-8")
@@ -225,8 +260,11 @@ def diarize_msdd(audio_path: str | Path, num_speakers: int = 2) -> NemoResult:
         cfg = OmegaConf.load(_msdd_cfg_path)
         cfg.diarizer.manifest_filepath = str(manifest)
         cfg.diarizer.out_dir = workdir
-        cfg.diarizer.clustering.parameters.oracle_num_speakers = True
-        cfg.diarizer.clustering.parameters.max_num_speakers = num_speakers
+        # Told a number, MSDD treats it as truth; told nothing, it estimates
+        # and needs an upper bound to search under.
+        cfg.diarizer.clustering.parameters.oracle_num_speakers = (
+            num_speakers is not None)
+        cfg.diarizer.clustering.parameters.max_num_speakers = num_speakers or 8
 
         NeuralDiarizer(cfg=cfg).diarize()
 

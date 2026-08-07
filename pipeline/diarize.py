@@ -329,9 +329,38 @@ def _smooth(times: np.ndarray, labels: np.ndarray, min_turn: float = 0.6) -> lis
     return merged
 
 
+def _estimate_speakers(emb: np.ndarray, lo: int = 2, hi: int = 6
+                       ) -> tuple[int, float, list[str]]:
+    """Pick the speaker count from the audio instead of being told it.
+
+    Each candidate count is clustered and scored by silhouette, and the best
+    score wins. The bias is worth stating: silhouette rewards compact, well
+    separated clusters, and merging two similar voices into one cluster often
+    scores better than splitting them correctly - so this leans low, and on
+    telephone audio where the voices barely separate at all it will lean low
+    harder. It answers "how many groups does this audio fall into", which is
+    the closest thing to a speaker count the embeddings can support, not "how
+    many people were on the call".
+    """
+    scores: dict[int, float] = {}
+    for k in range(lo, min(hi, max(2, emb.shape[0] - 1)) + 1):
+        try:
+            _, sep = _cluster(emb, k)
+        except Exception:
+            continue
+        scores[k] = sep
+    if not scores:
+        return 2, 0.0, ["Could not estimate a speaker count; assumed 2."]
+    best = max(scores, key=lambda k: scores[k])
+    notes = ["counted " + str(best) + " speaker(s) from the audio ("
+             + ", ".join(f"{k}:{v:.2f}" for k, v in sorted(scores.items()))
+             + "; higher is a tighter fit)"]
+    return best, scores[best], notes
+
+
 def diarize(
     audio_path: str | Path,
-    num_speakers: int = 2,
+    num_speakers: int | None = 2,
     speech_spans: list[tuple[float, float]] | None = None,
 ) -> DiarizationResult:
     audio = _load_audio(audio_path)
@@ -340,6 +369,10 @@ def diarize(
     if times.size == 0:
         return DiarizationResult([], [], 0, 0.0,
                                  ["No voiced windows found - nothing to diarize."])
+
+    estimate_notes: list[str] = []
+    if num_speakers is None:
+        num_speakers, _, estimate_notes = _estimate_speakers(emb)
 
     labels, separation = _cluster(emb, num_speakers)
     turns = _smooth(times, labels)
@@ -363,6 +396,7 @@ def diarize(
         separation=round(separation, 3),
         centroids=np.stack(centroids),
     )
+    result.notes.extend(estimate_notes)
 
     if separation < 0.10:
         result.notes.append(
