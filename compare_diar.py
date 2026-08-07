@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--align", default=None, choices=[None, "ctc"],
                    help="ctc = re-time words by forced alignment (whisperX's way)")
     p.add_argument("--level", default="off",
-                   choices=["off", "diarize", "asr", "all"],
+                   choices=["off", "diarize", "asr", "all", "speaker", "speaker-all"],
                    help="bring every speech span to one level first; the "
                         "recordings are 8-bit with a 20 dB spread between "
                         "parties, which costs the quieter one ~3 bits")

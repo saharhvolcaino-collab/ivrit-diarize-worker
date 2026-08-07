@@ -356,7 +356,45 @@ def handler(job):
         # voices, which is how an embedding ends up encoding the channel.
         level_mode = job_input.get("level", "off")
         wav_asr = wav_diar = wav
-        if level_mode in ("all", "diarize", "asr"):
+        result_level_note = None
+
+        if level_mode in ("speaker", "speaker-all"):
+            # The correct unit. Levelling per VAD span was tried and measurably
+            # hurt: a span is a stretch of speech, not a turn, so it commonly
+            # holds both parties and normalising it equalises nothing between
+            # them - while lifting the 250 ms of padding at each end turns
+            # quantisation noise into a burst exactly where turn boundaries
+            # are decided. One gain per speaker removes the measured 20 dB
+            # offset between parties and touches nothing else.
+            #
+            # The first pass only has to be roughly right: the gain is a median
+            # over all of a speaker's turns, so a few misattributed seconds
+            # barely move it.
+            from pipeline import levelling
+            import soundfile as sf
+            audio_raw, sr_raw = sf.read(wav, dtype="float32")
+            first = []
+            try:
+                from pipeline import nemo_diar
+                r0 = nemo_diar.diarize_sortformer(wav, num_speakers=None)
+                first = [{"speaker": t.speaker, "start": t.start, "end": t.end}
+                         for t in r0.turns]
+            except Exception:
+                from pipeline import diarize as _d
+                r0 = _d.diarize(wav, num_speakers=None)
+                first = [{"speaker": t.speaker, "start": t.start, "end": t.end}
+                         for t in r0.turns]
+            lev = levelling.level_by_speaker(audio_raw, first, sr_raw)
+            levelled = wav + ".levelled.wav"
+            sf.write(levelled, lev.audio, sr_raw)
+            wav_diar = levelled
+            if level_mode == "speaker-all":
+                wav_asr = levelled
+            result_level_note = {"mode": level_mode, "adjusted": lev.adjusted,
+                                 "first_pass_turns": len(first),
+                                 "notes": lev.notes}
+
+        elif level_mode in ("all", "diarize", "asr"):
             from pipeline import levelling
             import soundfile as sf
             from pipeline import vad as vad_pre
@@ -375,8 +413,6 @@ def handler(job):
                 "mode": level_mode, "adjusted": lev.adjusted,
                 "skipped": lev.skipped, "notes": lev.notes,
             }
-        else:
-            result_level_note = None
 
         t0 = time.time()
         words, meta = _transcribe(wav_asr, job_input)
