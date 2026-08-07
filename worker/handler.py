@@ -287,6 +287,34 @@ def _run_nemo_engines(
     return out
 
 
+def _capabilities() -> list[str]:
+    """What this image can actually do, reported on every response.
+
+    Deployed images and pushed code drift apart routinely here: RunPod builds
+    on release, but a FlashBoot-paused worker keeps serving whatever it was
+    frozen with, so a finished build is not a live build. Twice now that has
+    cost a run and a round of guessing about which version answered. An engine
+    that is present says so; one that is missing says that too.
+    """
+    caps = ["asr", "vad-snap", "ecapa"]
+    for name, probe in (
+        ("sortformer", lambda: __import__(
+            "importlib").util.find_spec("nemo") is not None),
+        ("pyannote", lambda: __import__(
+            "importlib").util.find_spec("pyannote.audio") is not None),
+        ("ctc-align", lambda: __import__(
+            "importlib").util.find_spec("pipeline.ctc_align") is not None),
+        ("msdd", lambda: os.path.exists(
+            os.environ.get("MSDD_MARKER", "/opt/nemo_models/msdd.ok"))),
+    ):
+        try:
+            if probe():
+                caps.append(name)
+        except Exception:
+            pass
+    return caps
+
+
 def handler(job):
     started = time.time()
     job_input = job.get("input") or {}
@@ -381,6 +409,7 @@ def handler(job):
                     for k, v in extra.items() if k != lead
                 }
                 result["meta"]["total_sec"] = round(time.time() - started, 2)
+                result["meta"]["capabilities"] = _capabilities()
                 return result
 
             t0 = time.time()
@@ -449,6 +478,7 @@ def handler(job):
                 }
 
         result["meta"]["total_sec"] = round(time.time() - started, 2)
+        result["meta"]["capabilities"] = _capabilities()
         return result
 
     except Exception as exc:

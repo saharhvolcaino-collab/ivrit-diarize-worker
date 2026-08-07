@@ -86,6 +86,9 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
                          "turns": alt.get("turns", []),
                          "meta": alt.get("meta", {})}
 
+    caps = (out.get("meta") or {}).get("capabilities")
+    if caps:
+        print(f"  worker has: {', '.join(caps)}")
     al = (out.get("meta") or {}).get("alignment")
     if al:
         print(f"  alignment: {al['engine']} moved {al['moved']} words, "
