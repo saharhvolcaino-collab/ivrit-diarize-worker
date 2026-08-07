@@ -322,6 +322,8 @@ def _capabilities() -> list[str]:
             "importlib").util.find_spec("pipeline.ctc_align") is not None),
         ("verify-2model", lambda: __import__(
             "importlib").util.find_spec("pipeline.consensus") is not None),
+        ("levelling", lambda: __import__(
+            "importlib").util.find_spec("pipeline.levelling") is not None),
         ("msdd", lambda: os.path.exists(
             os.environ.get("MSDD_MARKER", "/opt/nemo_models/msdd.ok"))),
     ):
@@ -340,8 +342,44 @@ def handler(job):
     try:
         wav = _fetch_audio(job_input)
 
+        # Levelling comes before anything reads the audio, because the
+        # recordings are 8-bit and that fixes the noise floor for the whole
+        # file. Measured here: a 20 dB spread between the two parties, so the
+        # quieter one arrives with ~2.7 effective bits against the louder
+        # one's 6.1. Every model downstream was trained on 16-bit speech at a
+        # sane level. Bringing each speech span to one level does not restore
+        # the lost bits - nothing can - but it stops the recording level from
+        # being the largest difference in the data.
+        #
+        # "diarize" levels only the speaker path: for ECAPA a systematic
+        # offset between parties is louder than the difference between their
+        # voices, which is how an embedding ends up encoding the channel.
+        level_mode = job_input.get("level", "off")
+        wav_asr = wav_diar = wav
+        if level_mode in ("all", "diarize", "asr"):
+            from pipeline import levelling
+            import soundfile as sf
+            from pipeline import vad as vad_pre
+            pre_spans, _ = vad_pre.detect_speech(
+                wav, threshold=float(job_input.get("vad_threshold", 0.4)))
+            audio_raw, sr_raw = sf.read(wav, dtype="float32")
+            lev = levelling.level_speech(
+                audio_raw, [(sp.start, sp.end) for sp in pre_spans], sr_raw)
+            levelled = wav + ".levelled.wav"
+            sf.write(levelled, lev.audio, sr_raw)
+            if level_mode in ("all", "asr"):
+                wav_asr = levelled
+            if level_mode in ("all", "diarize"):
+                wav_diar = levelled
+            result_level_note = {
+                "mode": level_mode, "adjusted": lev.adjusted,
+                "skipped": lev.skipped, "notes": lev.notes,
+            }
+        else:
+            result_level_note = None
+
         t0 = time.time()
-        words, meta = _transcribe(wav, job_input)
+        words, meta = _transcribe(wav_asr, job_input)
         meta["asr_sec"] = round(time.time() - t0, 2)
 
         result: dict = {"meta": meta, "words": words}
@@ -368,7 +406,7 @@ def handler(job):
                 from pipeline import consensus
                 vm = _load_verify()
                 vm._ivrit_name = VERIFY_MODEL
-                v_words, v_meta = _transcribe(wav, job_input, model=vm)
+                v_words, v_meta = _transcribe(wav_asr, job_input, model=vm)
                 rep = consensus.merge(
                     words, v_words,
                     label_a=WHISPER_MODEL.split("/")[-1],
@@ -430,7 +468,7 @@ def handler(job):
             engines = job_input.get("engines") or ["ecapa"]
             if isinstance(engines, str):
                 engines = [engines]
-            extra = _run_nemo_engines(wav, words, engines, num_speakers)
+            extra = _run_nemo_engines(wav_diar, words, engines, num_speakers)
             # Promote the first engine that actually produced turns. Naming the
             # first requested one unconditionally would crash on a failed
             # engine, whose entry holds an error and nothing else - and MSDD is
@@ -461,13 +499,13 @@ def handler(job):
             # applies VAD internally, so without this the diarizer alone sees
             # the silence, hold music and line noise - and embeds the channel
             # instead of the speakers. The spans were computed once above.
-            local = diar.diarize(wav, num_speakers=num_speakers,
+            local = diar.diarize(wav_diar, num_speakers=num_speakers,
                                  speech_spans=speech_spans)
             labelled = diar.assign_words(words, local.turns)
             flips = handed = 0
             if local.centroids is not None:
                 labelled, flips = diar.refine_word_speakers(
-                    wav, labelled, local.centroids)
+                    wav_diar, labelled, local.centroids)
             labelled = diar.realign_by_punctuation(labelled)
             found = len(local.speakers) or 2
             if local.centroids is not None and found == 2:
@@ -522,6 +560,8 @@ def handler(job):
                 }
 
         result["meta"]["total_sec"] = round(time.time() - started, 2)
+        if result_level_note:
+            result["meta"]["levelling"] = result_level_note
         result["meta"]["capabilities"] = _capabilities()
         return result
 
@@ -529,8 +569,9 @@ def handler(job):
         return {"error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc()[-2000:]}
     finally:
-        if wav and os.path.exists(wav):
-            os.unlink(wav)
+        for path in {wav, locals().get("wav_asr"), locals().get("wav_diar")}:
+            if path and os.path.exists(path):
+                os.unlink(path)
 
 
 # cuBLAS only guarantees run-to-run reproducibility when it is given a fixed

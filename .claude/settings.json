@@ -46,7 +46,12 @@
       "Bash(python -m py_compile pipeline/ctc_align.py)",
       "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-11-56_08-06-2026.wav /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --align ctc --out out/engines_ctc)",
       "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --align ctc --align-min-score 0.6 --out out/engines_ctc06)",
-      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --verify --out out/verify)"
+      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --verify --out out/verify)",
+      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\audit_audio.py\")",
+      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\headroom.py\")",
+      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\levels.py\")",
+      "Bash(python -m py_compile pipeline/levelling.py)",
+      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\test_levelling.py\")"
     ]
   }
 }
