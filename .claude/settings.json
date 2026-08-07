@@ -45,7 +45,8 @@
       "Bash(curl -sL \"https://api.github.com/repos/m-bain/whisperX/contents/whisperx/assets\")",
       "Bash(python -m py_compile pipeline/ctc_align.py)",
       "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-11-56_08-06-2026.wav /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --align ctc --out out/engines_ctc)",
-      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --align ctc --align-min-score 0.6 --out out/engines_ctc06)"
+      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --align ctc --align-min-score 0.6 --out out/engines_ctc06)",
+      "Bash(python compare_diar.py /c/Users/saharh/Desktop/תמלול/Rec722_83_11-18-44_08-06-2026.wav --endpoint snfaxi0dl8ugko --speakers auto --verify --out out/verify)"
     ]
   }
 }

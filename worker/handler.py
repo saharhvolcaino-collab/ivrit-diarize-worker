@@ -320,6 +320,8 @@ def _capabilities() -> list[str]:
             "importlib").util.find_spec("pyannote.audio") is not None),
         ("ctc-align", lambda: __import__(
             "importlib").util.find_spec("pipeline.ctc_align") is not None),
+        ("verify-2model", lambda: __import__(
+            "importlib").util.find_spec("pipeline.consensus") is not None),
         ("msdd", lambda: os.path.exists(
             os.environ.get("MSDD_MARKER", "/opt/nemo_models/msdd.ok"))),
     ):
