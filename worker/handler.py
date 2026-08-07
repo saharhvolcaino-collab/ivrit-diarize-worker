@@ -312,6 +312,25 @@ def handler(job):
             num_speakers = (None if raw_n in (None, "auto", "")
                             else int(raw_n))
 
+            # Speech spans come first and are shared by everything below.
+            # Whisper times words from decoder attention rather than from the
+            # waveform, so across the digital silence this telephony chain
+            # produces, a word can be reported a second away from where it is
+            # spoken. Every consumer of these timestamps - turn splitting on
+            # gaps, word-to-speaker overlap, the buried-answer splitter - then
+            # reasons about silence as if it were speech. Snapping before any
+            # diarizer runs fixes all of them at once, and identically.
+            from pipeline import vad as vad_mod
+            spans, _total = vad_mod.detect_speech(
+                wav, threshold=float(job_input.get("vad_threshold", 0.4)))
+            speech_spans = [(sp.start, sp.end) for sp in spans]
+
+            from pipeline import align as align_mod
+            words, snapped = align_mod.snap_words_to_speech(words, speech_spans)
+            if snapped:
+                result["meta"].setdefault("notes", []).append(
+                    f"snapped {snapped} word timestamp(s) onto measured speech")
+
             # Sortformer and MSDD both replace the sliding-window embedder with
             # a network that segments at frame resolution and was trained on
             # telephone speech. They are requested by name so one call can run
@@ -348,12 +367,7 @@ def handler(job):
             # Feed the diarizer the same speech the ASR heard. faster-whisper
             # applies VAD internally, so without this the diarizer alone sees
             # the silence, hold music and line noise - and embeds the channel
-            # instead of the speakers.
-            from pipeline import vad as vad_mod
-            spans, _total = vad_mod.detect_speech(
-                wav, threshold=float(job_input.get("vad_threshold", 0.4))
-            )
-            speech_spans = [(s.start, s.end) for s in spans]
+            # instead of the speakers. The spans were computed once above.
             local = diar.diarize(wav, num_speakers=num_speakers,
                                  speech_spans=speech_spans)
             labelled = diar.assign_words(words, local.turns)
