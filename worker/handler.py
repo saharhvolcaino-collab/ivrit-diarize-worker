@@ -52,7 +52,23 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "ivrit-ai/whisper-large-v3-ct2")
 # Loaded once at module scope. RunPod's FlashBoot snapshots the live process,
 # so models loaded lazily inside the handler would be reloaded on every cold
 # start - at billed time.
+# The second opinion. Same Hebrew training data, a distilled architecture, so
+# it fails differently - which is the entire point. Loaded lazily: a request
+# that does not ask for verification should not pay for 1.6 GB of weights.
+VERIFY_MODEL = os.environ.get("VERIFY_MODEL",
+                              "ivrit-ai/whisper-large-v3-turbo-ct2")
+
 _asr = None
+_asr_verify = None
+
+
+def _load_verify():
+    global _asr_verify
+    if _asr_verify is None:
+        from faster_whisper import WhisperModel
+        _asr_verify = WhisperModel(VERIFY_MODEL, device="cuda",
+                                   compute_type="float16")
+    return _asr_verify
 
 
 def _load_models() -> None:
@@ -92,8 +108,8 @@ def _fetch_audio(job_input: dict) -> str:
     return wav
 
 
-def _transcribe(wav: str, job_input: dict) -> tuple[list[dict], dict]:
-    segments, info = _asr.transcribe(
+def _transcribe(wav: str, job_input: dict, model=None) -> tuple[list[dict], dict]:
+    segments, info = (model or _asr).transcribe(
         wav,
         language=job_input.get("language", "he"),
         word_timestamps=True,
@@ -139,7 +155,7 @@ def _transcribe(wav: str, job_input: dict) -> tuple[list[dict], dict]:
         meta_note = None
 
     meta = {
-        "model": WHISPER_MODEL,
+        "model": getattr(model, "_ivrit_name", None) or WHISPER_MODEL,
         "language": info.language,
         "duration_sec": round(float(info.duration), 2),
         "duration_after_vad_sec": round(
@@ -339,6 +355,32 @@ def handler(job):
             raw_n = job_input.get("num_speakers", 2)
             num_speakers = (None if raw_n in (None, "auto", "")
                             else int(raw_n))
+
+            # A second model over the same audio, when asked. Two passes of
+            # the SAME decode would prove nothing - temperature and beam are
+            # pinned so a file transcribes identically every time. Two
+            # different models is the informative comparison: where they
+            # agree the word is as certain as this pipeline can make it, and
+            # where they differ is exactly where to look.
+            if job_input.get("verify"):
+                from pipeline import consensus
+                vm = _load_verify()
+                vm._ivrit_name = VERIFY_MODEL
+                v_words, v_meta = _transcribe(wav, job_input, model=vm)
+                rep = consensus.merge(
+                    words, v_words,
+                    label_a=WHISPER_MODEL.split("/")[-1],
+                    label_b=VERIFY_MODEL.split("/")[-1],
+                    arbitrate=job_input.get("arbitrate", "primary"))
+                words = rep.words
+                result["meta"]["verification"] = {
+                    "second_model": VERIFY_MODEL,
+                    "agreement_pct": rep.agreement_pct,
+                    "agreed": rep.agreed, "contested": rep.disagreed,
+                    "only_primary": rep.only_a, "only_secondary": rep.only_b,
+                    "disagreements": rep.disagreements,
+                    "notes": rep.notes,
+                }
 
             # Speech spans come first and are shared by everything below.
             # Whisper times words from decoder attention rather than from the

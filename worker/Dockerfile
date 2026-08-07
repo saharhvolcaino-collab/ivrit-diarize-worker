@@ -113,6 +113,12 @@ RUN python -c "\
 from huggingface_hub import snapshot_download; \
 snapshot_download(repo_id='ivrit-ai/whisper-large-v3-ct2')"
 
+# The turbo model, as a second opinion for word-level verification. Same
+# Hebrew training data, distilled architecture, so it makes different mistakes
+# - agreement between the two is the strongest confidence signal available
+# here, and disagreement locates the errors worth reviewing.
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='ivrit-ai/whisper-large-v3-turbo-ct2'); print('turbo baked as verifier')"
+
 # ECAPA speaker encoder - loading it through our own module also materialises
 # the copied savedir layout the runtime expects.
 RUN python -c "\
