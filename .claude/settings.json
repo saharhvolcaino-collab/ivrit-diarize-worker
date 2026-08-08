@@ -51,7 +51,19 @@
       "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\headroom.py\")",
       "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\levels.py\")",
       "Bash(python -m py_compile pipeline/levelling.py)",
-      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\test_levelling.py\")"
+      "Bash(python \"C:\\\\Users\\\\saharh\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-saharh-Desktop-newIvritAi\\\\8b79dc94-e3e5-4910-9943-23b6fce4c4eb\\\\scratchpad\\\\test_levelling.py\")",
+      "Bash(curl -sL \"https://api.github.com/repos/Rikorose/DeepFilterNet/contents/models\")",
+      "WebFetch(domain:www.sciencedirect.com)",
+      "Bash(curl -s \"https://api.github.com/repos/Rikorose/DeepFilterNet/issues/483/comments\")",
+      "Bash(curl -sL \"https://api.github.com/repos/Rikorose/DeepFilterNet/contents/\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/Rikorose/DeepFilterNet/main/LICENSE\")",
+      "WebFetch(domain:staff.ustc.edu.cn)",
+      "Bash(curl -sL \"https://api.github.com/repos/Rikorose/DeepFilterNet/contents/README.md\")",
+      "Bash(python -c \"import sys,json,base64; print\\(base64.b64decode\\(json.load\\(sys.stdin\\)['content']\\).decode\\('utf-8'\\)\\)\")",
+      "Bash(curl -sL -o dfn3.zip \"https://github.com/Rikorose/DeepFilterNet/raw/main/models/DeepFilterNet3.zip\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/Rikorose/DeepFilterNet/main/pyproject.toml\")",
+      "Bash(curl -sL \"https://api.github.com/repos/Rikorose/DeepFilterNet/contents/DeepFilterNet\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/Rikorose/DeepFilterNet/main/DeepFilterNet/df/enhance.py\")"
     ]
   }
 }

@@ -15,8 +15,11 @@ fenced in three ways:
      "improvements", no additions or deletions.
   2. The model must return exactly one line per input line; structural
      drift rejects the whole response.
-  3. A per-line guard rejects any correction that changes the word count by
-     more than a third - that is rewriting, not fixing.
+  3. A per-line guard rejects any correction that changes the line's letter
+     count by more than a third - that is rewriting, not fixing. Measured on
+     letters rather than words on purpose: the commonest Hebrew error here
+     splits one word into several ("מה שלומך" heard as "מה שאת אומרת"), which
+     doubles the word count while barely moving the letters.
 
 Every accepted change lands in a diff report for human review. Speaker labels
 and timestamps are never sent to the model, so they cannot be corrupted.
@@ -109,7 +112,19 @@ def polish(gpu_json: Path, out_dir: Path | None = None) -> dict:
             final.append(orig)
             continue
         ow, nw = len(orig.split()), len(new.split())
-        if ow >= 3 and abs(nw - ow) > max(1, ow // 3):
+        # Guard on characters, not words. A word-count rule was written to
+        # stop rewriting, and it did - but it also rejected the single most
+        # common Hebrew misrecognition shape, where one word is heard as
+        # several. A real case from this estate: "מה שלומך" came back as
+        # "מה שאת אומרת", two words becoming four. That is a 100% word-count
+        # change and a 4-character one, and the word rule threw away the
+        # correct fix while a rewrite of the same length would have passed.
+        #
+        # Characters measure what the rule was actually reaching for: a fix
+        # replaces sounds that were misheard, so it stays close in length,
+        # whatever it does to the spaces.
+        oc, nc = len(orig.replace(" ", "")), len(new.replace(" ", ""))
+        if oc >= 8 and abs(nc - oc) > max(4, oc // 3):
             rejected += 1
             final.append(orig)
             continue
