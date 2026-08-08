@@ -81,7 +81,7 @@ def _load_models() -> None:
     diar._get_encoder()
 
 
-def _fetch_audio(job_input: dict) -> tuple[str, float]:
+def _fetch_audio(job_input: dict) -> tuple[str, str | None, float]:
     """Materialise the request's audio as a 16 kHz mono wav path."""
     suffix = job_input.get("audio_format", "bin")
     fd, raw = tempfile.mkstemp(suffix=f".{suffix}")
@@ -111,17 +111,28 @@ def _fetch_audio(job_input: dict) -> tuple[str, float]:
     # is scaled back by the same factor before the response leaves, so the
     # caller always sees the real recording's clock.
     tempo = float(job_input.get("tempo", 0.85) or 1.0)
-    filters = "aresample=resampler=soxr:precision=28:dither_method=none:osr=16000"
-    if tempo != 1.0:
-        filters = f"atempo={tempo}," + filters
+    resample = "aresample=resampler=soxr:precision=28:dither_method=none:osr=16000"
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", raw,
-         "-af", filters,
-         "-ac", "1", "-c:a", "pcm_s16le", wav],
+         "-af", resample, "-ac", "1", "-c:a", "pcm_s16le", wav],
         check=True, capture_output=True,
     )
+    # The slowdown is an ASR trick and stays in the ASR lane. It was measured
+    # to help transcription (+4.4/+7.3 points agreement), but the diarizers
+    # were never part of that measurement - and feeding them 0.85x speech put
+    # them off their own training distribution: turns ballooned from ~170 to
+    # ~207 and buried answers rose. Speaker models hear the real recording.
+    wav_slow = None
+    if tempo != 1.0:
+        wav_slow = raw + f".t{tempo}.wav"
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", raw,
+             "-af", f"atempo={tempo},{resample}",
+             "-ac", "1", "-c:a", "pcm_s16le", wav_slow],
+            check=True, capture_output=True,
+        )
     os.unlink(raw)
-    return wav, tempo
+    return wav, wav_slow, tempo
 
 
 def _transcribe(wav: str, job_input: dict, model=None) -> tuple[list[dict], dict]:
@@ -417,11 +428,28 @@ def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
             continue
 
         nc = norm(c_txt)
-        sim_a = SequenceMatcher(a=nc, b=norm(a_txt), autojunk=False).ratio()             if a_txt.strip() else 0.0
-        sim_b = SequenceMatcher(a=nc, b=norm(b_txt), autojunk=False).ratio()             if b_txt.strip() else 0.0
+
+        def coverage(target: str) -> float:
+            """How much of `target` the referee's text contains.
+
+            A plain ratio between the whole clip text and a two-word reading
+            is dominated by the clip's surrounding context and lands near
+            zero for everything - measured: 90 of 112 regions "unresolved"
+            for exactly this reason. Coverage asks the right question: of the
+            disputed words, how many did the referee also hear, regardless of
+            what else it heard around them.
+            """
+            t = norm(target)
+            if not t:
+                return 0.0
+            m = SequenceMatcher(a=nc, b=t, autojunk=False)
+            matched = sum(bl.size for bl in m.get_matching_blocks())
+            return matched / len(t)
+
+        sim_a, sim_b = coverage(a_txt), coverage(b_txt)
         d["referee"] = c_txt.strip()[:120]
 
-        if sim_b > sim_a and sim_b >= 0.5 and d["_words_b"]:
+        if sim_b > sim_a + 0.1 and sim_b >= 0.7 and d["_words_b"]:
             ids = {id(w) for w in d["_out_words"]}
             idxs = [i for i, w in enumerate(rep.words) if id(w) in ids]
             if idxs:
@@ -434,7 +462,7 @@ def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
                 d["resolved"] = "secondary"
                 stats["overturned"] += 1
                 continue
-        if sim_a >= sim_b and sim_a >= 0.5:
+        if sim_a >= sim_b and sim_a >= 0.7:
             d["resolved"] = "primary-confirmed"
             stats["confirmed"] += 1
         else:
@@ -448,7 +476,7 @@ def handler(job):
     job_input = job.get("input") or {}
     wav = None
     try:
-        wav, tempo = _fetch_audio(job_input)
+        wav, wav_slow, tempo = _fetch_audio(job_input)
 
         # Levelling comes before anything reads the audio, because the
         # recordings are 8-bit and that fixes the noise floor for the whole
@@ -463,7 +491,8 @@ def handler(job):
         # offset between parties is louder than the difference between their
         # voices, which is how an embedding ends up encoding the channel.
         level_mode = job_input.get("level", "off")
-        wav_asr = wav_diar = wav
+        wav_asr = wav_slow or wav
+        wav_diar = wav
         result_level_note = None
 
         if level_mode in ("speaker", "speaker-all"):
@@ -574,6 +603,24 @@ def handler(job):
                 }
                 if vote_stats:
                     result["meta"]["verification"]["vote"] = vote_stats
+
+            # ASR ran on slowed audio; every consumer below - VAD snapping,
+            # diarizers, the report - lives on the real recording's clock.
+            # One scaling, at the seam between the two worlds.
+            if tempo != 1.0:
+                for w in words:
+                    w["start"] = round(w["start"] * tempo, 3)
+                    w["end"] = round(w["end"] * tempo, 3)
+                ver_meta = result["meta"].get("verification")
+                if ver_meta:
+                    for dd in ver_meta.get("disagreements", []):
+                        for k in ("start", "end"):
+                            if isinstance(dd.get(k), (int, float)):
+                                dd[k] = round(dd[k] * tempo, 2)
+                for key in ("duration_sec", "duration_after_vad_sec"):
+                    if isinstance(result["meta"].get(key), (int, float)):
+                        result["meta"][key] = round(result["meta"][key] * tempo, 2)
+                result["meta"]["tempo"] = tempo
 
             # Speech spans come first and are shared by everything below.
             # Whisper times words from decoder attention rather than from the
@@ -713,32 +760,6 @@ def handler(job):
                 }
 
         result["meta"]["total_sec"] = round(time.time() - started, 2)
-        # Everything above ran on slowed audio, so every timestamp is in the
-        # stretched clock. One multiplication at the exit restores real time;
-        # doing it anywhere earlier would leave two clocks in play at once.
-        if tempo != 1.0:
-            def _scale(obj):
-                if isinstance(obj, list):
-                    for x in obj:
-                        _scale(x)
-                elif isinstance(obj, dict):
-                    for k in ("start", "end"):
-                        if isinstance(obj.get(k), (int, float)):
-                            obj[k] = round(obj[k] * tempo, 3)
-                    for v in obj.values():
-                        if isinstance(v, (list, dict)):
-                            _scale(v)
-            _scale(result.get("words") or [])
-            _scale(result.get("turns") or [])
-            _scale(list((result.get("alternates") or {}).values()))
-            ver = (result.get("meta") or {}).get("verification")
-            if ver:
-                _scale(ver.get("disagreements") or [])
-            for key in ("duration_sec", "duration_after_vad_sec"):
-                if key in result.get("meta", {}):
-                    result["meta"][key] = round(result["meta"][key] * tempo, 2)
-            result["meta"]["tempo"] = tempo
-
         if result_level_note:
             result["meta"]["levelling"] = result_level_note
         result["meta"]["capabilities"] = _capabilities()
@@ -748,7 +769,8 @@ def handler(job):
         return {"error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc()[-2000:]}
     finally:
-        for path in {wav, locals().get("wav_asr"), locals().get("wav_diar")}:
+        for path in {wav, locals().get("wav_slow"),
+                     locals().get("wav_asr"), locals().get("wav_diar")}:
             if path and os.path.exists(path):
                 os.unlink(path)
 
