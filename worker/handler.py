@@ -163,6 +163,11 @@ def _transcribe(wav: str, job_input: dict, model=None) -> tuple[list[dict], dict
         temperature=[0.0],
         beam_size=int(job_input.get("beam_size", 5)),
         hotwords=job_input.get("hotwords") or None,
+        # Text the caller wants the decoder to treat as what was just said -
+        # segmentation clients pass the previous window's tail so a cut does
+        # not cost the decoder its conversational context. Nothing external
+        # enters here unless the caller puts it there.
+        initial_prompt=job_input.get("initial_prompt") or None,
     )
 
     words: list[dict] = []
