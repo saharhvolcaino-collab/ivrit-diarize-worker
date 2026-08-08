@@ -35,7 +35,7 @@ ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
 def _submit(blob: str, endpoint: str, creds, engines: list[str],
             num_speakers: int | None = 2, align: str | None = None,
             align_min_score: float = 0.0, verify: bool = False,
-            level: str = "off") -> dict:
+            vote: bool = False, level: str = "off") -> dict:
     payload = {"input": {
         "audio_base64": blob,
         "audio_format": "opus",
@@ -46,6 +46,7 @@ def _submit(blob: str, endpoint: str, creds, engines: list[str],
         "align": align,
         "align_min_score": align_min_score,
         "verify": verify,
+        "vote": vote,
         "level": level,
     }}
     job = rp._request(f"{API}/{endpoint}/run", creds.api_key, payload)
@@ -69,7 +70,7 @@ def _row(name: str, q: dict, meta: dict | None = None) -> str:
 def compare(audio: Path, endpoint: str, creds, out_dir: Path,
             num_speakers: int | None = 2, align: str | None = None,
             align_min_score: float = 0.0, verify: bool = False,
-            level: str = "off") -> dict:
+            vote: bool = False, level: str = "off") -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n=== {audio.name} ===")
 
@@ -79,7 +80,7 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
     started = time.time()
     # One request, every engine: same audio, same words, same GPU state.
     out = _submit(blob, endpoint, creds, ENGINES, num_speakers, align,
-                  align_min_score, verify, level)
+                  align_min_score, verify, vote, level)
     (out_dir / f"{audio.stem}.compare.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -102,6 +103,10 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
         print(f"  two-model check: {ver['agreement_pct']}% agreement "
               f"({ver['agreed']} agreed, {ver['contested']} contested, "
               f"{ver['only_primary']}+{ver['only_secondary']} one-sided)")
+        vt = ver.get("vote")
+        if vt:
+            print(f"     vote: {vt['confirmed']} confirmed, "
+                  f"{vt['overturned']} overturned, {vt['unresolved']} unresolved")
         for d in ver["disagreements"][:12]:
             a, b = [v for k, v in d.items() if k.startswith("whisper")][:2]
             print(f"     [{d['start']:7.1f}]  {a!r}  vs  {b!r}")
@@ -180,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="bring every speech span to one level first; the "
                         "recordings are 8-bit with a 20 dB spread between "
                         "parties, which costs the quieter one ~3 bits")
+    p.add_argument("--vote", action="store_true",
+                   help="re-decode each contested span with context and let "
+                        "that break the tie (implies --verify)")
     p.add_argument("--verify", action="store_true",
                    help="transcribe with a second model too; agreement marks "
                         "what is certain and disagreement locates the errors")
@@ -198,7 +206,8 @@ def main(argv: list[str] | None = None) -> int:
             n = None if args.speakers in ("auto", "", "none") else int(args.speakers)
             summary[Path(item).name] = compare(
                 Path(item), endpoint, creds, out_dir, n, args.align,
-                args.align_min_score, args.verify, args.level)
+                args.align_min_score, args.verify or args.vote,
+                args.vote, args.level)
         except Exception as exc:
             print(f"  ERROR {Path(item).name}: {exc}")
 

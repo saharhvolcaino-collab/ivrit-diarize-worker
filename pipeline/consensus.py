@@ -120,17 +120,28 @@ def merge(a: list[dict], b: list[dict], *,
             chosen, pick_b = seg_b, True
             only_b += len(seg_b)
 
-        for w in chosen:
-            out.append({**w, "agreement": False,
-                        "source": label_b if pick_b else label_a})
+        chosen_out = [{**w, "agreement": False,
+                       "source": label_b if pick_b else label_a}
+                      for w in chosen]
+        out.extend(chosen_out)
 
+        ref = seg_a or seg_b
         diffs.append({
-            "start": round(float((seg_a or seg_b)[0]["start"]), 2),
+            "start": round(float(ref[0]["start"]), 2),
+            "end": round(float(ref[-1]["end"]), 2),
             label_a: " ".join(w.get("word", "") for w in seg_a),
             label_b: " ".join(w.get("word", "") for w in seg_b),
             "kept": label_b if pick_b else label_a,
             "prob_a": round(_mean_prob(seg_a), 3),
             "prob_b": round(_mean_prob(seg_b), 3),
+            # Working state for a later vote, stripped before the response
+            # leaves the worker. References to the emitted dicts themselves,
+            # because merge() sorts the output at the end - an index recorded
+            # here would silently point at the wrong words afterwards, while
+            # object identity survives any reordering.
+            "_words_a": seg_a,
+            "_words_b": seg_b,
+            "_out_words": chosen_out,
         })
 
     out.sort(key=lambda w: float(w.get("start") or 0.0))

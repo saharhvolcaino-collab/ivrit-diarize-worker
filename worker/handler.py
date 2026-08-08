@@ -351,6 +351,98 @@ def _capabilities() -> list[str]:
     return caps
 
 
+def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
+    """Re-decode each contested region with context, and let it break the tie.
+
+    Two models disagreeing locates an error but cannot resolve it - and the
+    decoder's own confidence has been caught preferring the wrong word here
+    (0.80 for a misrecognition against 0.55 for the truth), so probability is
+    not a referee either. This is: the strong model decodes just the disputed
+    slice again, at a wider beam, with the agreed text leading up to the
+    dispute passed as initial_prompt. That last part is the point - Whisper's
+    decoder carries a language model, and handing it the conversational
+    context recruits it exactly where the acoustics are too thin to decide.
+
+    The referee only ever votes for one of the two existing readings. If its
+    text matches neither, the region stays contested and keeps the strong
+    model's words. Nothing is invented: every word in the output still came
+    from one of the decodes of this audio.
+    """
+    import re as _re
+
+    import soundfile as sf
+    from difflib import SequenceMatcher
+
+    def norm(t):
+        return _re.sub(r"[^\w֐-׿ ]+", "", t or "").lower().strip()
+
+    audio, sr = sf.read(wav_path, dtype="float32")
+    agreed = [w for w in rep.words if w.get("agreement")]
+    stats = {"regions": 0, "confirmed": 0, "overturned": 0, "unresolved": 0}
+
+    for d in rep.disagreements:
+        a_txt, b_txt = None, None
+        for k, v in d.items():
+            if k.startswith("_") or k in ("start", "end", "kept",
+                                          "prob_a", "prob_b"):
+                continue
+            if a_txt is None:
+                a_txt = v
+            else:
+                b_txt = v
+        if not (a_txt and b_txt and d.get("_out_words")):
+            continue
+        stats["regions"] += 1
+
+        lo = max(0.0, d["start"] - 4.0)
+        hi = min(len(audio) / sr, d["end"] + 2.0)
+        clip = audio[int(lo * sr):int(hi * sr)]
+        if clip.size < sr // 4:
+            stats["unresolved"] += 1
+            continue
+
+        # The agreed words immediately before the dispute, as decoding context.
+        prompt = " ".join(w["word"] for w in agreed
+                          if w["end"] <= d["start"])[-200:]
+        try:
+            segs, _ = _asr.transcribe(
+                clip, language=job_input.get("language", "he"),
+                beam_size=8, temperature=[0.0],
+                condition_on_previous_text=False,
+                initial_prompt=prompt or None,
+                vad_filter=False, word_timestamps=False)
+            c_txt = " ".join(sg.text for sg in segs)
+        except Exception:
+            stats["unresolved"] += 1
+            continue
+
+        nc = norm(c_txt)
+        sim_a = SequenceMatcher(a=nc, b=norm(a_txt), autojunk=False).ratio()             if a_txt.strip() else 0.0
+        sim_b = SequenceMatcher(a=nc, b=norm(b_txt), autojunk=False).ratio()             if b_txt.strip() else 0.0
+        d["referee"] = c_txt.strip()[:120]
+
+        if sim_b > sim_a and sim_b >= 0.5 and d["_words_b"]:
+            ids = {id(w) for w in d["_out_words"]}
+            idxs = [i for i, w in enumerate(rep.words) if id(w) in ids]
+            if idxs:
+                at = idxs[0]
+                for i in reversed(idxs):
+                    del rep.words[i]
+                rep.words[at:at] = [
+                    {**w, "agreement": False, "source": "referee-vote"}
+                    for w in d["_words_b"]]
+                d["resolved"] = "secondary"
+                stats["overturned"] += 1
+                continue
+        if sim_a >= sim_b and sim_a >= 0.5:
+            d["resolved"] = "primary-confirmed"
+            stats["confirmed"] += 1
+        else:
+            d["resolved"] = "unresolved"
+            stats["unresolved"] += 1
+    return stats
+
+
 def handler(job):
     started = time.time()
     job_input = job.get("input") or {}
@@ -464,6 +556,13 @@ def handler(job):
                     label_a=WHISPER_MODEL.split("/")[-1],
                     label_b=VERIFY_MODEL.split("/")[-1],
                     arbitrate=job_input.get("arbitrate", "primary"))
+                vote_stats = None
+                if job_input.get("vote"):
+                    vote_stats = _referee_contested(wav_asr, rep, job_input)
+                # Working state must not leave the worker.
+                for d in rep.disagreements:
+                    for k in ("_words_a", "_words_b", "_out_words"):
+                        d.pop(k, None)
                 words = rep.words
                 result["meta"]["verification"] = {
                     "second_model": VERIFY_MODEL,
@@ -473,6 +572,8 @@ def handler(job):
                     "disagreements": rep.disagreements,
                     "notes": rep.notes,
                 }
+                if vote_stats:
+                    result["meta"]["verification"]["vote"] = vote_stats
 
             # Speech spans come first and are shared by everything below.
             # Whisper times words from decoder attention rather than from the
