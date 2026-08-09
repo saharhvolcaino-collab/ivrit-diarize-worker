@@ -116,17 +116,28 @@ def build_variant(spans, variant: str):
 
 # ------------------------------------------------------------------ transport
 
-def _wav_bytes(audio: np.ndarray) -> bytes:
-    import soundfile as sf
-    buf = io.BytesIO()
-    sf.write(buf, audio, SR, format="WAV", subtype="PCM_16")
-    return buf.getvalue()
+def _opus_bytes(audio: np.ndarray) -> bytes:
+    """Encode a clip exactly the way production transport does.
+
+    Raw 16-bit WAV of the whole-file baseline is ~36 MB base64 against
+    RunPod's 10 MiB request cap - the first run died on it. OPUS at 24 kbps
+    is what the existing clients ship, fits every variant with room to
+    spare, and keeps the transport identical across variants so codec loss
+    cannot masquerade as a segmentation effect.
+    """
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error",
+         "-f", "f32le", "-ar", str(SR), "-ac", "1", "-i", "pipe:0",
+         "-c:a", "libopus", "-b:a", "24k", "-f", "ogg", "pipe:1"],
+        input=audio.astype(np.float32).tobytes(),
+        capture_output=True, check=True)
+    return proc.stdout
 
 
 def _submit(creds, endpoint: str, audio: np.ndarray, prompt: str | None = None):
     payload = {"input": {
-        "audio_base64": base64.b64encode(_wav_bytes(audio)).decode("ascii"),
-        "audio_format": "wav",
+        "audio_base64": base64.b64encode(_opus_bytes(audio)).decode("ascii"),
+        "audio_format": "opus",
         "language": "he",
         "diarize": False,
     }}

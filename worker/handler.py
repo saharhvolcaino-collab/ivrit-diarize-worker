@@ -562,6 +562,27 @@ def handler(job):
 
         result: dict = {"meta": meta, "words": words}
 
+        # ASR ran on slowed audio. Restore the real clock HERE, before any
+        # consumer - including ASR-only callers. This block used to live
+        # inside the diarize branch, so diarize:false requests returned
+        # stretched timestamps: a segmentation benchmark merged its windows
+        # by those times and interleaved words at every boundary.
+        if tempo != 1.0 and words:
+            for w in words:
+                w["start"] = round(w["start"] * tempo, 3)
+                w["end"] = round(w["end"] * tempo, 3)
+            ver_meta = result["meta"].get("verification")
+            if ver_meta:
+                for dd in ver_meta.get("disagreements", []):
+                    for k in ("start", "end"):
+                        if isinstance(dd.get(k), (int, float)):
+                            dd[k] = round(dd[k] * tempo, 2)
+            for key in ("duration_sec", "duration_after_vad_sec"):
+                if isinstance(result["meta"].get(key), (int, float)):
+                    result["meta"][key] = round(result["meta"][key] * tempo, 2)
+            result["meta"]["tempo"] = tempo
+            result["words"] = words
+
         if job_input.get("diarize", True) and words:
             from pipeline import diarize as diar
             from pipeline import quality
@@ -608,24 +629,6 @@ def handler(job):
                 }
                 if vote_stats:
                     result["meta"]["verification"]["vote"] = vote_stats
-
-            # ASR ran on slowed audio; every consumer below - VAD snapping,
-            # diarizers, the report - lives on the real recording's clock.
-            # One scaling, at the seam between the two worlds.
-            if tempo != 1.0:
-                for w in words:
-                    w["start"] = round(w["start"] * tempo, 3)
-                    w["end"] = round(w["end"] * tempo, 3)
-                ver_meta = result["meta"].get("verification")
-                if ver_meta:
-                    for dd in ver_meta.get("disagreements", []):
-                        for k in ("start", "end"):
-                            if isinstance(dd.get(k), (int, float)):
-                                dd[k] = round(dd[k] * tempo, 2)
-                for key in ("duration_sec", "duration_after_vad_sec"):
-                    if isinstance(result["meta"].get(key), (int, float)):
-                        result["meta"][key] = round(result["meta"][key] * tempo, 2)
-                result["meta"]["tempo"] = tempo
 
             # Speech spans come first and are shared by everything below.
             # Whisper times words from decoder attention rather than from the
