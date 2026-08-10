@@ -35,7 +35,8 @@ ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
 def _submit(blob: str, endpoint: str, creds, engines: list[str],
             num_speakers: int | None = 2, align: str | None = None,
             align_min_score: float = 0.0, verify: bool = False,
-            vote: bool = False, level: str = "off") -> dict:
+            vote: bool = False, level: str = "off",
+            rescue: bool = False, gemini_key: str | None = None) -> dict:
     payload = {"input": {
         "audio_base64": blob,
         "audio_format": "opus",
@@ -47,6 +48,8 @@ def _submit(blob: str, endpoint: str, creds, engines: list[str],
         "align_min_score": align_min_score,
         "verify": verify,
         "vote": vote,
+        "rescue": rescue,
+        "gemini_key": gemini_key,
         "level": level,
     }}
     job = rp._request(f"{API}/{endpoint}/run", creds.api_key, payload)
@@ -70,7 +73,8 @@ def _row(name: str, q: dict, meta: dict | None = None) -> str:
 def compare(audio: Path, endpoint: str, creds, out_dir: Path,
             num_speakers: int | None = 2, align: str | None = None,
             align_min_score: float = 0.0, verify: bool = False,
-            vote: bool = False, level: str = "off") -> dict:
+            vote: bool = False, level: str = "off",
+            rescue: bool = False, gemini_key: str | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n=== {audio.name} ===")
 
@@ -80,7 +84,7 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
     started = time.time()
     # One request, every engine: same audio, same words, same GPU state.
     out = _submit(blob, endpoint, creds, ENGINES, num_speakers, align,
-                  align_min_score, verify, vote, level)
+                  align_min_score, verify, vote, level, rescue, gemini_key)
     (out_dir / f"{audio.stem}.compare.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -103,6 +107,9 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
         print(f"  two-model check: {ver['agreement_pct']}% agreement "
               f"({ver['agreed']} agreed, {ver['contested']} contested, "
               f"{ver['only_primary']}+{ver['only_secondary']} one-sided)")
+        rs = ver.get("rescue")
+        if rs:
+            print(f"     rescue: {rs}")
         vt = ver.get("vote")
         if vt:
             print(f"     vote: {vt['confirmed']} confirmed, "
@@ -168,6 +175,14 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
     return results
 
 
+def _gemini_key() -> str | None:
+    import pathlib
+    for line in pathlib.Path(".env").read_text(encoding="utf-8").splitlines():
+        if line.startswith("GEMINI_API_KEY="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import gpu as gpu_mod
@@ -185,6 +200,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="bring every speech span to one level first; the "
                         "recordings are 8-bit with a 20 dB spread between "
                         "parties, which costs the quieter one ~3 bits")
+    p.add_argument("--rescue", action="store_true",
+                   help="send regions the referee could not settle to the "
+                        "listening LLM (needs GEMINI_API_KEY in .env; "
+                        "implies --vote)")
     p.add_argument("--vote", action="store_true",
                    help="re-decode each contested span with context and let "
                         "that break the tie (implies --verify)")
@@ -206,8 +225,10 @@ def main(argv: list[str] | None = None) -> int:
             n = None if args.speakers in ("auto", "", "none") else int(args.speakers)
             summary[Path(item).name] = compare(
                 Path(item), endpoint, creds, out_dir, n, args.align,
-                args.align_min_score, args.verify or args.vote,
-                args.vote, args.level)
+                args.align_min_score,
+                args.verify or args.vote or args.rescue,
+                args.vote or args.rescue, args.level,
+                args.rescue, _gemini_key() if args.rescue else None)
         except Exception as exc:
             print(f"  ERROR {Path(item).name}: {exc}")
 

@@ -354,6 +354,8 @@ def _capabilities() -> list[str]:
             "importlib").util.find_spec("pipeline.ctc_align") is not None),
         ("verify-2model", lambda: __import__(
             "importlib").util.find_spec("pipeline.consensus") is not None),
+        ("rescue-gemini", lambda: __import__(
+            "importlib").util.find_spec("pipeline.rescue") is not None),
         ("levelling", lambda: __import__(
             "importlib").util.find_spec("pipeline.levelling") is not None),
         ("msdd", lambda: os.path.exists(
@@ -614,6 +616,20 @@ def handler(job):
                 vote_stats = None
                 if job_input.get("vote"):
                     vote_stats = _referee_contested(wav_asr, rep, job_input)
+                # Gate 3: regions all three of our decodes could not settle
+                # go to a different ear entirely. Runs before the working
+                # state is stripped because the splice needs _out_words.
+                rescue_stats = None
+                g_key = os.environ.get("GEMINI_API_KEY") or job_input.get("gemini_key")
+                if job_input.get("rescue") and g_key:
+                    from pipeline import rescue as rescue_mod
+                    try:
+                        rescue_stats = rescue_mod.rescue_unresolved(
+                            wav_asr, rep, g_key,
+                            model=job_input.get("rescue_model")
+                            or rescue_mod.DEFAULT_MODEL)
+                    except Exception as exc:
+                        rescue_stats = {"error": f"{type(exc).__name__}: {exc}"[:160]}
                 # Working state must not leave the worker.
                 for d in rep.disagreements:
                     for k in ("_words_a", "_words_b", "_out_words"):
@@ -629,6 +645,8 @@ def handler(job):
                 }
                 if vote_stats:
                     result["meta"]["verification"]["vote"] = vote_stats
+                if rescue_stats:
+                    result["meta"]["verification"]["rescue"] = rescue_stats
 
             # Speech spans come first and are shared by everything below.
             # Whisper times words from decoder attention rather than from the
