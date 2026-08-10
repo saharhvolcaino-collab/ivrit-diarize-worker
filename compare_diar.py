@@ -50,6 +50,7 @@ def _submit(blob: str, endpoint: str, creds, engines: list[str],
         "vote": vote,
         "rescue": rescue,
         "gemini_key": gemini_key,
+        "rescue_model": "gemini-flash-latest",
         "level": level,
     }}
     job = rp._request(f"{API}/{endpoint}/run", creds.api_key, payload)

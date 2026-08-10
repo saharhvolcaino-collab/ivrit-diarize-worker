@@ -40,7 +40,10 @@ import re
 import urllib.error
 import urllib.request
 
-DEFAULT_MODEL = os.environ.get("RESCUE_MODEL", "gemini-2.5-flash")
+# flash-latest, not a pinned version: billed projects created after mid-2026
+# are refused gemini-2.5-flash outright ("no longer available to new users"),
+# and the alias tracks whatever flash-class model is current.
+DEFAULT_MODEL = os.environ.get("RESCUE_MODEL", "gemini-flash-latest")
 MAX_REGIONS = int(os.environ.get("RESCUE_MAX_REGIONS", "40"))
 CLIP_PRE_SEC = 3.0
 CLIP_POST_SEC = 2.0
