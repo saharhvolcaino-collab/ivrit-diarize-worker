@@ -643,7 +643,8 @@ def handler(job):
                         rescue_stats = rescue_mod.rescue_unresolved(
                             wav_asr, rep, g_key,
                             model=job_input.get("rescue_model")
-                            or rescue_mod.DEFAULT_MODEL)
+                            or rescue_mod.DEFAULT_MODEL,
+                            real_wav_path=wav, tempo=tempo)
                     except Exception as exc:
                         rescue_stats = {"error": f"{type(exc).__name__}: {exc}"[:160]}
                 # Working state must not leave the worker.

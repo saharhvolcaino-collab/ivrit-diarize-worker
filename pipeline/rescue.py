@@ -95,7 +95,10 @@ def _ask_gemini_once(api_key: str, model: str, prompt: str, audio_b64: str) -> d
         data=json.dumps({"contents": [{"parts": [
             {"text": prompt},
             {"inline_data": {"mime_type": "audio/wav", "data": audio_b64}},
-        ]}]}).encode(),
+        ]}],
+            "generationConfig": {"temperature": 0.0,
+                                 "thinkingConfig": {"thinkingLevel": "MINIMAL"}},
+        }).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as r:
         d = json.loads(r.read())
@@ -114,7 +117,16 @@ def _ask_gemini_once(api_key: str, model: str, prompt: str, audio_b64: str) -> d
             + int(usage.get("thoughtsTokenCount", 0))}
 
 
-def _prompt(prev_text: str, next_text: str, hyp_a: str, hyp_b: str) -> str:
+def _prompt(prev_text: str, next_text: str) -> str:
+    """Transcribe-only prompt. Three measured design decisions live here.
+
+    No hypotheses: shown the engines' guesses, the ear echoed a wrong one;
+    without them it heard the disputed phrase right three runs of three.
+    Matching against the hypotheses happens in code, after listening.
+    Temperature 0 (set in the request): the default sampled a different
+    answer per run on the same clip. MINIMAL thinking (ditto): thought
+    tokens were ~75% of spend and bought nothing on a listening task.
+    """
     parts = [
         "Listen to the attached Hebrew audio from a call-centre phone "
         "recording.",
@@ -133,10 +145,6 @@ def _prompt(prev_text: str, next_text: str, hyp_a: str, hyp_b: str) -> str:
         "",
         "Transcribe ONLY the disputed middle part of the clip (the clip "
         "includes a little surrounding speech for context).",
-        "Two automatic transcribers disagreed about it. Their hypotheses - "
-        "both may be wrong; trust your ears:",
-        f'  hypothesis 1: "{hyp_a}"',
-        f'  hypothesis 2: "{hyp_b}"',
         "",
         'Return ONLY JSON: {"transcript": "...", "confidence": 0.0-1.0}',
     ]
@@ -161,7 +169,9 @@ def _plausible(text: str, hyp_a: str, hyp_b: str) -> bool:
 
 
 def rescue_unresolved(wav_path: str, rep, api_key: str, *,
-                      model: str = DEFAULT_MODEL) -> dict:
+                      model: str = DEFAULT_MODEL,
+                      real_wav_path: str | None = None,
+                      tempo: float = 1.0) -> dict:
     """Send each unresolved disagreement to the listening LLM; splice winners.
 
     Works in the same (possibly tempo-stretched) clock as `rep`, before the
@@ -177,7 +187,12 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
 
     import soundfile as sf
 
-    audio, sr = sf.read(wav_path, dtype="float32")
+    # The ear gets the REAL recording, not the 0.85x ASR copy. Measured:
+    # at real tempo it heard the flagship phrase; slowed, it collapsed to
+    # echoing a hypothesis. Pipeline times are in the stretched clock, so
+    # cuts convert by *tempo.
+    audio, sr = sf.read(real_wav_path or wav_path, dtype="float32")
+    t_scale = tempo if real_wav_path else 1.0
     agreed = [w for w in rep.words if w.get("agreement")]
 
     stats = {"attempted": 0, "adopted": 0, "matched_hypothesis": 0,
@@ -198,12 +213,12 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
                              if w["end"] <= d["start"])[-120:]
         next_text = " ".join(w["word"] for w in agreed
                              if w["start"] >= d.get("end", d["start"]))[:120]
-        lo = d["start"] - CLIP_PRE_SEC
-        hi = d.get("end", d["start"] + 2.0) + CLIP_POST_SEC
+        lo = d["start"] * t_scale - CLIP_PRE_SEC
+        hi = d.get("end", d["start"] + 2.0) * t_scale + CLIP_POST_SEC
         try:
             _time.sleep(PACE_SEC)
             ans = _ask_gemini(api_key, model,
-                              _prompt(prev_text, next_text, hyps[0], hyps[1]),
+                              _prompt(prev_text, next_text),
                               _clip_wav_b64(audio, sr, lo, hi))
             return d, hyps[0], hyps[1], ans
         except Exception as exc:
