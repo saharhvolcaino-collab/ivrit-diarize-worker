@@ -43,7 +43,12 @@ import urllib.request
 # flash-latest, not a pinned version: billed projects created after mid-2026
 # are refused gemini-2.5-flash outright ("no longer available to new users"),
 # and the alias tracks whatever flash-class model is current.
-DEFAULT_MODEL = os.environ.get("RESCUE_MODEL", "gemini-flash-latest")
+# gemini-3-flash-preview: measured on the flagship clip as byte-identical
+# across three runs at temperature 0 (flash-latest still wobbled), heard the
+# target phrase every time, accepts MINIMAL thinking, 59 output tokens per
+# clip. On Vertex AI the same family ships as "gemini-3-flash" if the rescue
+# path ever moves behind the user's direct Vertex billing.
+DEFAULT_MODEL = os.environ.get("RESCUE_MODEL", "gemini-3-flash-preview")
 MAX_REGIONS = int(os.environ.get("RESCUE_MAX_REGIONS", "40"))
 CLIP_PRE_SEC = 3.0
 CLIP_POST_SEC = 2.0
