@@ -37,6 +37,7 @@ import io
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 
 DEFAULT_MODEL = os.environ.get("RESCUE_MODEL", "gemini-2.5-flash")
@@ -61,6 +62,27 @@ def _clip_wav_b64(audio, sr: int, lo: float, hi: float) -> str:
 
 
 def _ask_gemini(api_key: str, model: str, prompt: str, audio_b64: str) -> dict:
+    """One request, with backoff - free-tier Gemini rate-limits bursts.
+
+    Measured on the first production run: 34 sequential clips, 15 came back
+    429. The queue is not latency-sensitive (it adds seconds to a job that
+    takes minutes), so waiting beats failing.
+    """
+    import time as _time
+
+    last = None
+    for attempt in range(4):
+        try:
+            return _ask_gemini_once(api_key, model, prompt, audio_b64)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429:
+                raise
+            last = exc
+            _time.sleep(8 * (attempt + 1))
+    raise last
+
+
+def _ask_gemini_once(api_key: str, model: str, prompt: str, audio_b64: str) -> dict:
     req = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
         f":generateContent?key={api_key}",
@@ -160,6 +182,8 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         lo = d["start"] - CLIP_PRE_SEC
         hi = d.get("end", d["start"] + 2.0) + CLIP_POST_SEC
         try:
+            import time as _t
+            _t.sleep(2.0)          # stay under the free-tier RPM ceiling
             ans = _ask_gemini(api_key, model,
                               _prompt(prev_text, next_text, hyp_a, hyp_b),
                               _clip_wav_b64(audio, sr, lo, hi))

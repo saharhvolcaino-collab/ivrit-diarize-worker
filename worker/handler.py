@@ -460,12 +460,28 @@ def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
             ids = {id(w) for w in d["_out_words"]}
             idxs = [i for i, w in enumerate(rep.words) if id(w) in ids]
             if idxs:
+                # Rebase the incoming words onto the removed span's clock.
+                # The two streams are aligned by TEXT, and a phrase said
+                # twice in one call can cross-align - measured: turbo words
+                # from 212s spliced at 249s, which threw every downstream
+                # time consumer (turns went negative-length, dominant-speaker
+                # printed -53%). The text is the other model's; the time
+                # axis must stay local.
+                a_lo = float(rep.words[idxs[0]]["start"])
+                a_hi = float(rep.words[idxs[-1]]["end"])
+                b_lo = float(d["_words_b"][0]["start"])
+                b_hi = float(d["_words_b"][-1]["end"])
+                span = max(b_hi - b_lo, 1e-6)
+                scale = max(a_hi - a_lo, 0.05) / span
+                rebased = [
+                    {**w, "agreement": False, "source": "referee-vote",
+                     "start": round(a_lo + (float(w["start"]) - b_lo) * scale, 3),
+                     "end": round(a_lo + (float(w["end"]) - b_lo) * scale, 3)}
+                    for w in d["_words_b"]]
                 at = idxs[0]
                 for i in reversed(idxs):
                     del rep.words[i]
-                rep.words[at:at] = [
-                    {**w, "agreement": False, "source": "referee-vote"}
-                    for w in d["_words_b"]]
+                rep.words[at:at] = rebased
                 d["resolved"] = "secondary"
                 stats["overturned"] += 1
                 continue
