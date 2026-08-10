@@ -45,6 +45,9 @@ MAX_REGIONS = int(os.environ.get("RESCUE_MAX_REGIONS", "40"))
 CLIP_PRE_SEC = 3.0
 CLIP_POST_SEC = 2.0
 MIN_CONFIDENCE = 0.5
+# Paid-tier pacing. The 2s crawl was the free tier's RPM ceiling; billing
+# raises it far above our queue size, so the spacing drops to a courtesy.
+PACE_SEC = float(os.environ.get("RESCUE_PACE_SEC", "0.25"))
 
 _HEB = re.compile(r"[֐-׿]")
 
@@ -98,8 +101,14 @@ def _ask_gemini_once(api_key: str, model: str, prompt: str, audio_b64: str) -> d
     if not m:
         raise ValueError("no JSON in model reply")
     out = json.loads(m.group(0))
+    usage = d.get("usageMetadata", {})
     return {"transcript": str(out.get("transcript", "")).strip(),
-            "confidence": float(out.get("confidence", 0.0))}
+            "confidence": float(out.get("confidence", 0.0)),
+            # The API's own meter, so cost reporting is measured consumption
+            # rather than an estimate from clip lengths.
+            "prompt_tokens": int(usage.get("promptTokenCount", 0)),
+            "output_tokens": int(usage.get("candidatesTokenCount", 0))
+            + int(usage.get("thoughtsTokenCount", 0))}
 
 
 def _prompt(prev_text: str, next_text: str, hyp_a: str, hyp_b: str) -> str:
@@ -161,7 +170,8 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
     agreed = [w for w in rep.words if w.get("agreement")]
 
     stats = {"attempted": 0, "adopted": 0, "matched_hypothesis": 0,
-             "new_text": 0, "rejected": 0, "errors": 0}
+             "new_text": 0, "rejected": 0, "errors": 0,
+             "prompt_tokens": 0, "output_tokens": 0}
 
     todo = [d for d in rep.disagreements
             if d.get("resolved") == "unresolved" and d.get("_out_words")]
@@ -183,7 +193,7 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         hi = d.get("end", d["start"] + 2.0) + CLIP_POST_SEC
         try:
             import time as _t
-            _t.sleep(2.0)          # stay under the free-tier RPM ceiling
+            _t.sleep(PACE_SEC)
             ans = _ask_gemini(api_key, model,
                               _prompt(prev_text, next_text, hyp_a, hyp_b),
                               _clip_wav_b64(audio, sr, lo, hi))
@@ -192,6 +202,8 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
             d["rescue"] = {"error": f"{type(exc).__name__}: {exc}"[:120]}
             continue
 
+        stats["prompt_tokens"] += ans.get("prompt_tokens", 0)
+        stats["output_tokens"] += ans.get("output_tokens", 0)
         d["rescue"] = {"heard": ans["transcript"][:160],
                        "confidence": round(ans["confidence"], 2)}
         if ans["confidence"] < MIN_CONFIDENCE or \
