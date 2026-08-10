@@ -163,7 +163,15 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
 
     Works in the same (possibly tempo-stretched) clock as `rep`, before the
     seam - exactly like the referee, so nothing here knows two clocks exist.
+
+    The network waits run concurrently: clips are independent until the
+    splice, and on the paid tier six workers turn a 35-region queue from
+    minutes of serial pacing into seconds. Only the answers are applied
+    serially, because splicing mutates rep.words.
     """
+    from concurrent.futures import ThreadPoolExecutor
+    import time as _time
+
     import soundfile as sf
 
     audio, sr = sf.read(wav_path, dtype="float32")
@@ -175,16 +183,14 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
 
     todo = [d for d in rep.disagreements
             if d.get("resolved") == "unresolved" and d.get("_out_words")]
-    for d in todo[:MAX_REGIONS]:
+
+    def _fetch(d):
         hyps = [v for k, v in d.items()
                 if not k.startswith("_")
                 and k not in ("start", "end", "kept", "resolved", "referee",
                               "prob_a", "prob_b", "rescue")]
         if len(hyps) < 2:
-            continue
-        hyp_a, hyp_b = hyps[0], hyps[1]
-        stats["attempted"] += 1
-
+            return d, None, None, None
         prev_text = " ".join(w["word"] for w in agreed
                              if w["end"] <= d["start"])[-120:]
         next_text = " ".join(w["word"] for w in agreed
@@ -192,22 +198,32 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         lo = d["start"] - CLIP_PRE_SEC
         hi = d.get("end", d["start"] + 2.0) + CLIP_POST_SEC
         try:
-            import time as _t
-            _t.sleep(PACE_SEC)
+            _time.sleep(PACE_SEC)
             ans = _ask_gemini(api_key, model,
-                              _prompt(prev_text, next_text, hyp_a, hyp_b),
+                              _prompt(prev_text, next_text, hyps[0], hyps[1]),
                               _clip_wav_b64(audio, sr, lo, hi))
+            return d, hyps[0], hyps[1], ans
         except Exception as exc:
+            return d, hyps[0], hyps[1], exc
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        fetched = list(ex.map(_fetch, todo[:MAX_REGIONS]))
+
+    for d, hyp_a, hyp_b, ans in fetched:
+        if hyp_a is None:
+            continue
+        stats["attempted"] += 1
+        if ans is None or isinstance(ans, Exception):
             stats["errors"] += 1
-            d["rescue"] = {"error": f"{type(exc).__name__}: {exc}"[:120]}
+            if ans is not None:
+                d["rescue"] = {"error": f"{type(ans).__name__}: {ans}"[:120]}
             continue
 
         stats["prompt_tokens"] += ans.get("prompt_tokens", 0)
         stats["output_tokens"] += ans.get("output_tokens", 0)
         d["rescue"] = {"heard": ans["transcript"][:160],
                        "confidence": round(ans["confidence"], 2)}
-        if ans["confidence"] < MIN_CONFIDENCE or \
-                not _plausible(ans["transcript"], hyp_a, hyp_b):
+        if ans["confidence"] < MIN_CONFIDENCE or                 not _plausible(ans["transcript"], hyp_a, hyp_b):
             stats["rejected"] += 1
             continue
 
