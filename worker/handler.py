@@ -369,7 +369,9 @@ def _capabilities() -> list[str]:
     return caps
 
 
-def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
+def _referee_contested(wav_path: str, rep, job_input: dict,
+                       real_wav: str | None = None,
+                       tempo: float = 1.0) -> dict:
     """Re-decode each contested region with context, and let it break the tie.
 
     Two models disagreeing locates an error but cannot resolve it - and the
@@ -394,8 +396,25 @@ def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
     def norm(t):
         return _re.sub(r"[^\w֐-׿ ]+", "", t or "").lower().strip()
 
-    audio, sr = sf.read(wav_path, dtype="float32")
+    # The referee probes each disputed clip at more than one playback
+    # rate. Varispeed (resample - pitch drops with speed) moves spectral
+    # cues that sit against this channel's 3.85 kHz ceiling down into the
+    # engine's best band: measured on the flagship island, the phrase every
+    # configuration misheard for days decoded correctly at 0.75 - three
+    # runs out of three - while pitch-PRESERVING slowdown at the same rate
+    # did nothing. The sweet spot is narrow and per-region, which is why
+    # this is a ladder and not a constant.
+    from scipy.signal import resample_poly
+
+    audio, sr = sf.read(real_wav or wav_path, dtype="float32")
+    t_scale = tempo if real_wav else 1.0
     agreed = [w for w in rep.words if w.get("agreement")]
+
+    def _probes(clip):
+        yield "1.0", clip
+        for rate in (0.85, 0.75):
+            up = int(round(sr / rate))
+            yield f"vs{rate}", resample_poly(clip, up, sr).astype(clip.dtype)
     stats = {"regions": 0, "confirmed": 0, "overturned": 0, "unresolved": 0}
 
     for d in rep.disagreements:
@@ -412,8 +431,8 @@ def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
             continue
         stats["regions"] += 1
 
-        lo = max(0.0, d["start"] - 4.0)
-        hi = min(len(audio) / sr, d["end"] + 2.0)
+        lo = max(0.0, d["start"] * t_scale - 4.0)
+        hi = min(len(audio) / sr, d["end"] * t_scale + 2.0)
         clip = audio[int(lo * sr):int(hi * sr)]
         if clip.size < sr // 4:
             stats["unresolved"] += 1
@@ -422,15 +441,33 @@ def _referee_contested(wav_path: str, rep, job_input: dict) -> dict:
         # The agreed words immediately before the dispute, as decoding context.
         prompt = " ".join(w["word"] for w in agreed
                           if w["end"] <= d["start"])[-200:]
-        try:
-            segs, _ = _asr.transcribe(
-                clip, language=job_input.get("language", "he"),
-                beam_size=8, temperature=[0.0],
-                condition_on_previous_text=False,
-                initial_prompt=prompt or None,
-                vad_filter=False, word_timestamps=False)
-            c_txt = " ".join(sg.text for sg in segs)
-        except Exception:
+        # Decode the ladder; keep the reading whose hypothesis coverage
+        # separates most decisively. A rate that garbles produces text
+        # matching neither hypothesis and loses the argmax automatically.
+        c_txt, best_sep = "", -1.0
+        for rate_name, probe in _probes(clip):
+            try:
+                segs, _ = _asr.transcribe(
+                    probe, language=job_input.get("language", "he"),
+                    beam_size=8, temperature=[0.0],
+                    condition_on_previous_text=False,
+                    initial_prompt=prompt or None,
+                    vad_filter=False, word_timestamps=False)
+                txt = " ".join(sg.text for sg in segs)
+            except Exception:
+                continue
+            n_probe = norm(txt)
+            def cov(target):
+                t = norm(target)
+                if not t:
+                    return 0.0
+                m = SequenceMatcher(a=n_probe, b=t, autojunk=False)
+                return sum(bl.size for bl in m.get_matching_blocks()) / len(t)
+            sep = abs(cov(a_txt) - cov(b_txt))
+            if sep > best_sep:
+                best_sep, c_txt = sep, txt
+                d["referee_rate"] = rate_name
+        if not c_txt:
             stats["unresolved"] += 1
             continue
 
@@ -631,7 +668,8 @@ def handler(job):
                     arbitrate=job_input.get("arbitrate", "primary"))
                 vote_stats = None
                 if job_input.get("vote"):
-                    vote_stats = _referee_contested(wav_asr, rep, job_input)
+                    vote_stats = _referee_contested(wav_asr, rep, job_input,
+                                                    real_wav=wav, tempo=tempo)
                 # Gate 3: regions all three of our decodes could not settle
                 # go to a different ear entirely. Runs before the working
                 # state is stripped because the splice needs _out_words.
