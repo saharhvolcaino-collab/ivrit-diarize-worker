@@ -143,6 +143,11 @@ def _ask_gemini(api_key: str, model: str, prompt: str, audio_b64: str) -> dict:
                 raise _ModelExhausted(f"quota: {body[:160]}")
             last = exc
             _time.sleep(_retry_wait(exc, body, attempt))
+        except (TimeoutError, urllib.error.URLError) as exc:
+            # A dropped read is transient; the clip is not at fault.
+            # Measured: exactly one timeout in 80 concurrent fetches.
+            last = exc
+            _time.sleep(4.0 * (attempt + 1))
     raise last
 
 
@@ -261,6 +266,51 @@ def _anchor_trim(text: str, prev_text: str, next_text: str) -> str:
     return " ".join(toks)
 
 
+def _fuzzy_anchor_trim(text: str, prev_text: str, next_text: str) -> str:
+    """Anchor-trim for when the anchors themselves were misheard.
+
+    Measured failure (flagship phrase, v0.24 run): Gemini heard the whole
+    clip RIGHT - including the caller identity every engine had garbled -
+    at 0.98 confidence, and the answer was rejected because the engines'
+    "agreed" context words did not match Gemini's rendering of them token
+    for token. Exact matching punishes the ear for being better than the
+    anchor.
+
+    So: fuzzy. Slide a window over the answer's tokens looking for the
+    best SequenceMatcher ratio against the anchor (the last few agreed
+    words before the region / the first few after). A window scoring
+    >= 0.75 is the context; cut through it. The plausibility and
+    confidence gates still stand behind this - a bad cut dies there.
+    """
+    from difflib import SequenceMatcher
+
+    def _best_window(tok_n: list[str], anchor: list[str]) -> tuple:
+        a = " ".join(anchor)
+        best_r, best_span = 0.0, None
+        for size in {max(1, len(anchor) - 1), len(anchor), len(anchor) + 1}:
+            for i in range(0, len(tok_n) - size + 1):
+                r = SequenceMatcher(a=a, b=" ".join(tok_n[i:i + size]),
+                                    autojunk=False).ratio()
+                if r > best_r:
+                    best_r, best_span = r, (i, i + size)
+        return best_r, best_span
+
+    toks = text.split()
+    tok_n = [_norm(w) for w in toks]
+    prev_n = [_norm(w) for w in prev_text.split()][-4:]
+    if prev_n and len(tok_n) > 1:
+        r, span = _best_window(tok_n, prev_n)
+        if r >= 0.75 and span and span[1] < len(toks):
+            toks = toks[span[1]:]
+            tok_n = tok_n[span[1]:]
+    next_n = [_norm(w) for w in next_text.split()][:4]
+    if next_n and len(tok_n) > 1:
+        r, span = _best_window(tok_n, next_n)
+        if r >= 0.75 and span and span[0] > 0:
+            toks = toks[:span[0]]
+    return " ".join(toks)
+
+
 def rescue_unresolved(wav_path: str, rep, api_key: str, *,
                       model: str = DEFAULT_MODEL,
                       real_wav_path: str | None = None,
@@ -363,8 +413,14 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         if not _plausible(ans["transcript"], hyp_a, hyp_b):
             # Before rejecting, try shaving echoed context off the answer:
             # a transcript of the WHOLE clip is not a wrong answer, just an
-            # untrimmed one.
+            # untrimmed one. Exact token overlap first; if the anchors were
+            # themselves misheard by the engines, the fuzzy pass finds them
+            # by similarity instead.
             trimmed = _anchor_trim(ans["transcript"], prev_text, next_text)
+            if trimmed == ans["transcript"] or \
+                    not _plausible(trimmed, hyp_a, hyp_b):
+                trimmed = _fuzzy_anchor_trim(ans["transcript"],
+                                             prev_text, next_text)
             if trimmed != ans["transcript"] and \
                     _plausible(trimmed, hyp_a, hyp_b):
                 ans["transcript"] = trimmed
