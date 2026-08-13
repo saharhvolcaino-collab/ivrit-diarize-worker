@@ -61,20 +61,47 @@ VERIFY_MODEL = os.environ.get("VERIFY_MODEL",
 _asr = None
 _asr_verify = None
 
+# CTranslate2's two known corrupt-cache fingerprints. A download interrupted
+# mid-model.bin leaves a truncated file that fails only when loaded
+# ("json.exception.type_error"); a ctranslate2 major-version bump makes an
+# old cache unreadable ("Unable to open file"). Both have the same cure.
+_CT2_CORRUPTION = ("json.exception.type_error", "Unable to open file")
+
+
+def _fresh_model(name: str):
+    """Load a CT2 model; a corrupt HuggingFace cache heals itself once.
+
+    An unattended worker with a poisoned cache would otherwise fail every
+    job until a human noticed. On the fingerprinted errors only: purge that
+    model's cache directory, re-download, retry once - so a genuinely
+    broken model still fails, loudly, instead of looping.
+    """
+    from faster_whisper import WhisperModel
+    try:
+        return WhisperModel(name, device="cuda", compute_type="float16")
+    except (RuntimeError, OSError, ValueError) as exc:
+        if not any(s in str(exc) for s in _CT2_CORRUPTION):
+            raise
+        import shutil
+        base = os.environ.get("HF_HOME") or os.path.expanduser(
+            "~/.cache/huggingface")
+        slug = "models--" + name.replace("/", "--")
+        for root, dirs, _files in os.walk(base):
+            if slug in dirs:
+                shutil.rmtree(os.path.join(root, slug), ignore_errors=True)
+        return WhisperModel(name, device="cuda", compute_type="float16")
+
 
 def _load_verify():
     global _asr_verify
     if _asr_verify is None:
-        from faster_whisper import WhisperModel
-        _asr_verify = WhisperModel(VERIFY_MODEL, device="cuda",
-                                   compute_type="float16")
+        _asr_verify = _fresh_model(VERIFY_MODEL)
     return _asr_verify
 
 
 def _load_models() -> None:
     global _asr
-    from faster_whisper import WhisperModel
-    _asr = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
+    _asr = _fresh_model(WHISPER_MODEL)
 
     # Warm the diarization encoder too (env ECAPA_DEVICE=cuda in the image).
     from pipeline import diarize as diar
@@ -356,6 +383,11 @@ def _capabilities() -> list[str]:
             "importlib").util.find_spec("pipeline.consensus") is not None),
         ("rescue-gemini", lambda: __import__(
             "importlib").util.find_spec("pipeline.rescue") is not None),
+        # v0.23 markers: model failover + anchor-trim in the rescue path,
+        # and the self-healing model cache in this file.
+        ("rescue-failover", lambda: hasattr(__import__(
+            "pipeline.rescue", fromlist=["_"]), "FALLBACK_MODELS")),
+        ("cache-heal", lambda: True),
         ("levelling", lambda: __import__(
             "importlib").util.find_spec("pipeline.levelling") is not None),
         ("msdd", lambda: os.path.exists(

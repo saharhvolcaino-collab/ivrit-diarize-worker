@@ -24,12 +24,36 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from pipeline import hebrew_polish as polish_mod
 from pipeline import parse as parse_mod
 from pipeline import preprocess as prep_mod
 from pipeline import runpod_client as rp
 
 API = "https://api.runpod.ai/v2"
 ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
+
+
+def _preflight(audio: Path) -> None:
+    """A corrupt export from the recorder must not reach the GPU bill.
+
+    ffprobe confirms a decodable audio stream exists before any upload or
+    model time is spent. Degrades to proceeding if ffprobe itself is
+    missing or slow - ffmpeg downstream will still complain, just later
+    and at higher cost.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name", "-of", "json",
+             str(audio)],
+            capture_output=True, text=True, timeout=15)
+    except Exception:
+        return
+    if r.returncode != 0 or '"codec_name"' not in r.stdout:
+        raise RuntimeError(
+            f"no decodable audio stream in {audio.name}: "
+            f"{(r.stderr or 'empty/corrupt file').strip()[:100]}")
 
 
 def _submit(blob: str, endpoint: str, creds, engines: list[str],
@@ -79,6 +103,7 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n=== {audio.name} ===")
 
+    _preflight(audio)
     prep = prep_mod.preprocess(audio, out_dir, make_opus=True)
     blob = base64.b64encode(Path(prep.opus_path).read_bytes()).decode("ascii")
 
@@ -145,9 +170,25 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
         # One directory per engine, same filename inside each. Reading the
         # same call across methods is then a matter of opening the same name
         # in two folders, rather than picking suffixes apart in one listing.
+        # Grammar-only polish on the finished text: directional-mark
+        # hygiene and terminal "?" on unambiguous direct questions. Runs
+        # after all recognition decisions - never feeds back into ASR.
         turns = [parse_mod.Turn(speaker=t["speaker"], start=t["start"],
-                                end=t["end"], text=t.get("text", ""), words=[])
+                                end=t["end"],
+                                text=polish_mod.question_marks(
+                                    polish_mod.strip_marks(t.get("text", ""))),
+                                words=[])
                  for t in r["turns"]]
+        # Morphology as a diarization cross-check: "אני מדברת" pins the
+        # speaker's gender from the words alone. Diagnostic only.
+        g = polish_mod.gender_signals(turns)
+        if g["speakers"]:
+            line = ", ".join(f"{s}:{c}"
+                             for s, c in sorted(g["speakers"].items()))
+            print(f"    [gender] feminine self-markers: {line}")
+            for ts, spk, w in g["suspects"][:4]:
+                print(f"    [gender?] {ts:6.1f}s '{w}' filed under {spk} "
+                      f"- possible boundary misattribution")
         if turns:
             t_obj = parse_mod.Transcript(
                 source=f"{audio.name} [{name}]", turns=turns,

@@ -49,6 +49,11 @@ import urllib.request
 # clip. On Vertex AI the same family ships as "gemini-3-flash" if the rescue
 # path ever moves behind the user's direct Vertex billing.
 DEFAULT_MODEL = os.environ.get("RESCUE_MODEL", "gemini-3-flash-preview")
+# If the pinned model dies mid-run (404 on a retired preview, 402, a daily
+# quota), the queue moves to the next model instead of erroring 40 clips.
+# gemini-2.5-flash vanishing for new billed projects is exactly this event.
+FALLBACK_MODELS = [m.strip() for m in os.environ.get(
+    "RESCUE_FALLBACK", "gemini-flash-latest").split(",") if m.strip()]
 MAX_REGIONS = int(os.environ.get("RESCUE_MAX_REGIONS", "40"))
 CLIP_PRE_SEC = 3.0
 CLIP_POST_SEC = 2.0
@@ -58,10 +63,45 @@ MIN_CONFIDENCE = 0.5
 PACE_SEC = float(os.environ.get("RESCUE_PACE_SEC", "0.25"))
 
 _HEB = re.compile(r"[֐-׿]")
+# Directional formatting characters (LRM/RLM, embeddings, isolates, BOM).
+# Players and plain-text viewers render them as stray glyphs in RTL text,
+# and LLM output sometimes carries them invisibly.
+_DIR_MARKS = re.compile("[‎‏‪-‮⁦-⁩﻿]")
 
 
 def _norm(t: str) -> str:
     return re.sub(r"[^\w֐-׿ ]+", "", t or "").strip().lower()
+
+
+class _ModelExhausted(Exception):
+    """This model is out for the whole run - retrying it is pure loss.
+
+    404: the model was retired (previews do vanish mid-month). 402 or a
+    prepay/credit message: billing is empty. A per-DAY quota 429: no wait
+    inside one job will refill it. All three mean: stop asking this model,
+    try the next one in the chain.
+    """
+
+
+def _http_body(exc) -> str:
+    try:
+        return exc.read().decode("utf-8", "replace")[:800]
+    except Exception:
+        return ""
+
+
+def _retry_wait(exc, body: str, attempt: int) -> float:
+    """Wait what the server asked for, not a blind guess - capped at 180s."""
+    hdr = (exc.headers or {}).get("Retry-After")
+    if hdr:
+        try:
+            return min(float(hdr), 180.0)
+        except ValueError:
+            pass
+    m = re.search(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"', body)
+    if m:
+        return min(float(m.group(1)), 180.0)
+    return 8.0 * (attempt + 1)
 
 
 def _clip_wav_b64(audio, sr: int, lo: float, hi: float) -> str:
@@ -73,11 +113,14 @@ def _clip_wav_b64(audio, sr: int, lo: float, hi: float) -> str:
 
 
 def _ask_gemini(api_key: str, model: str, prompt: str, audio_b64: str) -> dict:
-    """One request, with backoff - free-tier Gemini rate-limits bursts.
+    """One request, with a taxonomy instead of blind retries.
 
     Measured on the first production run: 34 sequential clips, 15 came back
     429. The queue is not latency-sensitive (it adds seconds to a job that
-    takes minutes), so waiting beats failing.
+    takes minutes), so waiting beats failing - but only for errors a wait
+    can fix. Permanent ones (model retired, billing empty, daily quota)
+    raise _ModelExhausted so the caller fails over instead of stalling
+    every clip for the full backoff ladder.
     """
     import time as _time
 
@@ -86,10 +129,16 @@ def _ask_gemini(api_key: str, model: str, prompt: str, audio_b64: str) -> dict:
         try:
             return _ask_gemini_once(api_key, model, prompt, audio_b64)
         except urllib.error.HTTPError as exc:
+            body = _http_body(exc)
+            if exc.code in (402, 404):
+                raise _ModelExhausted(f"HTTP {exc.code}: {body[:160]}")
             if exc.code != 429:
                 raise
+            low = body.lower()
+            if "perday" in low or "prepay" in low or "credit" in low:
+                raise _ModelExhausted(f"quota: {body[:160]}")
             last = exc
-            _time.sleep(8 * (attempt + 1))
+            _time.sleep(_retry_wait(exc, body, attempt))
     raise last
 
 
@@ -113,7 +162,8 @@ def _ask_gemini_once(api_key: str, model: str, prompt: str, audio_b64: str) -> d
         raise ValueError("no JSON in model reply")
     out = json.loads(m.group(0))
     usage = d.get("usageMetadata", {})
-    return {"transcript": str(out.get("transcript", "")).strip(),
+    return {"transcript": _DIR_MARKS.sub(
+                "", str(out.get("transcript", ""))).strip(),
             "confidence": float(out.get("confidence", 0.0)),
             # The API's own meter, so cost reporting is measured consumption
             # rather than an estimate from clip lengths.
@@ -173,6 +223,40 @@ def _plausible(text: str, hyp_a: str, hyp_b: str) -> bool:
     return True
 
 
+def _anchor_trim(text: str, prev_text: str, next_text: str) -> str:
+    """Cut an over-long answer down to the disputed middle.
+
+    The clip deliberately carries ~5s of surrounding speech for context, and
+    the ear often transcribes all of it - a correct answer that then fails
+    the length guard. Measured on the validation sweep: 25-29 rejections per
+    call, most of them this. But the surplus words are exactly the AGREED
+    words around the region, which we hold verbatim: strip the longest
+    transcript prefix that matches the tail of the preceding agreed text,
+    and the longest suffix matching the head of the following agreed text.
+    Matching is on normalised tokens, and only whole-sequence overlaps are
+    removed - a genuine repeated word inside the disputed region does not
+    match a multi-token anchor and survives.
+    """
+    toks = text.split()
+    if not toks:
+        return text
+    tok_n = [_norm(w) for w in toks]
+    prev_n = [_norm(w) for w in prev_text.split()]
+    cut = 0
+    for k in range(1, min(len(prev_n), len(tok_n)) + 1):
+        if tok_n[:k] == prev_n[-k:]:
+            cut = k
+    toks, tok_n = toks[cut:], tok_n[cut:]
+    next_n = [_norm(w) for w in next_text.split()]
+    cut = 0
+    for k in range(1, min(len(next_n), len(tok_n)) + 1):
+        if tok_n[-k:] == next_n[:k]:
+            cut = k
+    if cut:
+        toks = toks[:-cut]
+    return " ".join(toks)
+
+
 def rescue_unresolved(wav_path: str, rep, api_key: str, *,
                       model: str = DEFAULT_MODEL,
                       real_wav_path: str | None = None,
@@ -187,6 +271,7 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
     minutes of serial pacing into seconds. Only the answers are applied
     serially, because splicing mutates rep.words.
     """
+    import threading
     from concurrent.futures import ThreadPoolExecutor
     import time as _time
 
@@ -201,11 +286,32 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
     agreed = [w for w in rep.words if w.get("agreement")]
 
     stats = {"attempted": 0, "adopted": 0, "matched_hypothesis": 0,
-             "new_text": 0, "rejected": 0, "errors": 0,
+             "new_text": 0, "trimmed": 0, "rejected": 0, "errors": 0,
              "prompt_tokens": 0, "output_tokens": 0}
 
     todo = [d for d in rep.disagreements
             if d.get("resolved") == "unresolved" and d.get("_out_words")]
+
+    # Failover chain, shared by every worker thread: a model that raised
+    # _ModelExhausted is dead for the rest of the run, and every clip after
+    # that goes straight to the next model instead of rediscovering it.
+    chain = [model] + [m for m in FALLBACK_MODELS if m != model]
+    dead: set[str] = set()
+    dead_lock = threading.Lock()
+
+    def _ask_chain(prompt: str, clip_b64: str) -> dict:
+        last: Exception | None = None
+        for m in chain:
+            with dead_lock:
+                if m in dead:
+                    continue
+            try:
+                return _ask_gemini(api_key, m, prompt, clip_b64)
+            except _ModelExhausted as exc:
+                with dead_lock:
+                    dead.add(m)
+                last = exc
+        raise last or RuntimeError("no rescue model available")
 
     def _fetch(d):
         hyps = [v for k, v in d.items()
@@ -213,7 +319,7 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
                 and k not in ("start", "end", "kept", "resolved", "referee",
                               "prob_a", "prob_b", "rescue")]
         if len(hyps) < 2:
-            return d, None, None, None
+            return d, None, None, None, "", ""
         prev_text = " ".join(w["word"] for w in agreed
                              if w["end"] <= d["start"])[-120:]
         next_text = " ".join(w["word"] for w in agreed
@@ -222,17 +328,16 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         hi = d.get("end", d["start"] + 2.0) * t_scale + CLIP_POST_SEC
         try:
             _time.sleep(PACE_SEC)
-            ans = _ask_gemini(api_key, model,
-                              _prompt(prev_text, next_text),
-                              _clip_wav_b64(audio, sr, lo, hi))
-            return d, hyps[0], hyps[1], ans
+            ans = _ask_chain(_prompt(prev_text, next_text),
+                             _clip_wav_b64(audio, sr, lo, hi))
+            return d, hyps[0], hyps[1], ans, prev_text, next_text
         except Exception as exc:
-            return d, hyps[0], hyps[1], exc
+            return d, hyps[0], hyps[1], exc, prev_text, next_text
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         fetched = list(ex.map(_fetch, todo[:MAX_REGIONS]))
 
-    for d, hyp_a, hyp_b, ans in fetched:
+    for d, hyp_a, hyp_b, ans, prev_text, next_text in fetched:
         if hyp_a is None:
             continue
         stats["attempted"] += 1
@@ -246,9 +351,22 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         stats["output_tokens"] += ans.get("output_tokens", 0)
         d["rescue"] = {"heard": ans["transcript"][:160],
                        "confidence": round(ans["confidence"], 2)}
-        if ans["confidence"] < MIN_CONFIDENCE or                 not _plausible(ans["transcript"], hyp_a, hyp_b):
+        if ans["confidence"] < MIN_CONFIDENCE:
             stats["rejected"] += 1
             continue
+        if not _plausible(ans["transcript"], hyp_a, hyp_b):
+            # Before rejecting, try shaving echoed context off the answer:
+            # a transcript of the WHOLE clip is not a wrong answer, just an
+            # untrimmed one.
+            trimmed = _anchor_trim(ans["transcript"], prev_text, next_text)
+            if trimmed != ans["transcript"] and \
+                    _plausible(trimmed, hyp_a, hyp_b):
+                ans["transcript"] = trimmed
+                d["rescue"]["trimmed"] = True
+                stats["trimmed"] += 1
+            else:
+                stats["rejected"] += 1
+                continue
 
         # Splice by object identity, same mechanism as the referee swap -
         # indices are unreliable after merge() sorts its output.
@@ -282,4 +400,6 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
 
     if len(todo) > MAX_REGIONS:
         stats["skipped_over_budget"] = len(todo) - MAX_REGIONS
+    if dead:
+        stats["models_exhausted"] = sorted(dead)
     return stats
