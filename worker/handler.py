@@ -522,7 +522,13 @@ def _referee_contested(wav_path: str, rep, job_input: dict,
                 d["resolved"] = "secondary"
                 stats["overturned"] += 1
                 continue
-        if sim_a >= sim_b and sim_a >= 0.7:
+        if sim_a >= 0.7 and sim_a - sim_b >= 0.2:
+            # A confirmation must be DECISIVE to stop escalation. Measured
+            # failure: the referee heard a third reading that overlapped a
+            # wrong hypothesis just enough to "confirm" it by a whisker, and
+            # that weak confirmation blocked the listening LLM from ever
+            # hearing the clip - the flagship phrase regressed in exactly
+            # this way. A referee that is not sure must say so.
             d["resolved"] = "primary-confirmed"
             stats["confirmed"] += 1
         else:
