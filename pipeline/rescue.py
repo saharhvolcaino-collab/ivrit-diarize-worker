@@ -54,7 +54,11 @@ DEFAULT_MODEL = os.environ.get("RESCUE_MODEL", "gemini-3-flash-preview")
 # gemini-2.5-flash vanishing for new billed projects is exactly this event.
 FALLBACK_MODELS = [m.strip() for m in os.environ.get(
     "RESCUE_FALLBACK", "gemini-flash-latest").split(",") if m.strip()]
-MAX_REGIONS = int(os.environ.get("RESCUE_MAX_REGIONS", "40"))
+# 40 was measured too tight: the conference call left 41 unresolved regions
+# outside the budget. At ~400 prompt tokens a clip the marginal cost of a
+# region is a hundredth of an agora - the budget exists against runaway
+# calls, not to save money on real ones.
+MAX_REGIONS = int(os.environ.get("RESCUE_MAX_REGIONS", "80"))
 CLIP_PRE_SEC = 3.0
 CLIP_POST_SEC = 2.0
 MIN_CONFIDENCE = 0.5
@@ -260,7 +264,8 @@ def _anchor_trim(text: str, prev_text: str, next_text: str) -> str:
 def rescue_unresolved(wav_path: str, rep, api_key: str, *,
                       model: str = DEFAULT_MODEL,
                       real_wav_path: str | None = None,
-                      tempo: float = 1.0) -> dict:
+                      tempo: float = 1.0,
+                      max_regions: int | None = None) -> dict:
     """Send each unresolved disagreement to the listening LLM; splice winners.
 
     Works in the same (possibly tempo-stretched) clock as `rep`, before the
@@ -334,8 +339,9 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         except Exception as exc:
             return d, hyps[0], hyps[1], exc, prev_text, next_text
 
+    limit = int(max_regions) if max_regions else MAX_REGIONS
     with ThreadPoolExecutor(max_workers=6) as ex:
-        fetched = list(ex.map(_fetch, todo[:MAX_REGIONS]))
+        fetched = list(ex.map(_fetch, todo[:limit]))
 
     for d, hyp_a, hyp_b, ans, prev_text, next_text in fetched:
         if hyp_a is None:
@@ -398,8 +404,8 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         else:
             stats["new_text"] += 1
 
-    if len(todo) > MAX_REGIONS:
-        stats["skipped_over_budget"] = len(todo) - MAX_REGIONS
+    if len(todo) > limit:
+        stats["skipped_over_budget"] = len(todo) - limit
     if dead:
         stats["models_exhausted"] = sorted(dead)
     return stats

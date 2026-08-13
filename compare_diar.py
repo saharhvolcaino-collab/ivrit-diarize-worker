@@ -173,12 +173,24 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
         # Grammar-only polish on the finished text: directional-mark
         # hygiene and terminal "?" on unambiguous direct questions. Runs
         # after all recognition decisions - never feeds back into ASR.
-        turns = [parse_mod.Turn(speaker=t["speaker"], start=t["start"],
-                                end=t["end"],
-                                text=polish_mod.question_marks(
-                                    polish_mod.strip_marks(t.get("text", ""))),
-                                words=[])
-                 for t in r["turns"]]
+        # Each turn also carries its words so the HTML can underline the
+        # low-confidence ones - the reviewer sees WHERE to double-check.
+        all_words = out.get("words") or []
+        turns = []
+        for t in r["turns"]:
+            tw = [parse_mod.Word(word=w.get("word", ""),
+                                 start=float(w.get("start", 0.0)),
+                                 end=float(w.get("end", 0.0)),
+                                 speaker=None,
+                                 probability=w.get("probability"))
+                  for w in all_words
+                  if t["start"] - 0.05 <= float(w.get("start", 0.0))
+                  <= t["end"] + 0.05]
+            turns.append(parse_mod.Turn(
+                speaker=t["speaker"], start=t["start"], end=t["end"],
+                text=polish_mod.question_marks(
+                    polish_mod.strip_marks(t.get("text", ""))),
+                words=tw))
         # Morphology as a diarization cross-check: "אני מדברת" pins the
         # speaker's gender from the words alone. Diagnostic only.
         g = polish_mod.gender_signals(turns)

@@ -401,6 +401,66 @@ def _capabilities() -> list[str]:
     return caps
 
 
+def _flag_hesitations(rep, job_input: dict, label_a: str, label_b: str) -> int:
+    """Open the funnel where the decoder hesitated even though both agreed.
+
+    Measured failure (flagship call, v0.23 run): both models converged on
+    the same wrong word, so the region never became a dispute and the whole
+    escalation chain stayed dark - while the wrong word carried probability
+    0.741 in a sentence of 0.93-1.0 neighbours. The decoder knew.
+
+    The signature is a LOCAL DIP: an agreed content word under the
+    threshold whose neighbours are both confident. That shape matters - a
+    globally low patch (crosstalk, noise) floods hundreds of words, and
+    sending them all to the referee is death by GPU-time. Measured on the
+    hard call: dip-shaped selection finds 53 regions where a bare threshold
+    finds 193, and the flagship word is among them.
+
+    Each dip becomes a synthetic dispute with both hypotheses equal,
+    tagged _hesitation. The referee stress-tests it; whatever is not
+    decisively re-confirmed goes to the listening LLM.
+    """
+    import re as _re
+
+    thr = float(job_input.get("hesitation_prob", 0.78))
+    if thr <= 0:
+        return 0
+    neighbour = 0.90
+    cap = int(job_input.get("hesitation_cap", 60))
+    ws = rep.words
+    dips = []
+    for i, w in enumerate(ws):
+        if not w.get("agreement"):
+            continue
+        p = float(w.get("probability") or 1.0)
+        if p >= thr:
+            continue
+        if len(_re.sub(r"[^\w֐-׿]+", "", w.get("word", ""))) < 2:
+            continue
+        prv = float(ws[i - 1].get("probability") or 1.0) if i else 1.0
+        nxt = (float(ws[i + 1].get("probability") or 1.0)
+               if i + 1 < len(ws) else 1.0)
+        if prv >= neighbour and nxt >= neighbour:
+            dips.append((p, w))
+    # Over the cap, keep the deepest dips - they are the likeliest errors.
+    dips.sort(key=lambda pw: pw[0])
+    for p, w in dips[:cap]:
+        rep.disagreements.append({
+            "start": round(float(w["start"]), 2),
+            "end": round(float(w["end"]), 2),
+            "kept": label_a,
+            label_a: w["word"],
+            label_b: w["word"],
+            "prob_a": round(p, 3), "prob_b": round(p, 3),
+            "_hesitation": True,
+            "_words_a": [w], "_words_b": [],
+            "_out_words": [w],
+        })
+    if dips:
+        rep.disagreements.sort(key=lambda d: d.get("start", 0.0))
+    return min(len(dips), cap)
+
+
 def _referee_contested(wav_path: str, rep, job_input: dict,
                        real_wav: str | None = None,
                        tempo: float = 1.0) -> dict:
@@ -473,6 +533,41 @@ def _referee_contested(wav_path: str, rep, job_input: dict,
         # The agreed words immediately before the dispute, as decoding context.
         prompt = " ".join(w["word"] for w in agreed
                           if w["end"] <= d["start"])[-200:]
+
+        if d.get("_hesitation"):
+            # A hesitation region has one reading, not two, so the
+            # referee's job flips from tie-breaking to stress-testing.
+            # Confirm only if EVERY playback rate reproduces the agreed
+            # word: on the flagship phrase the wrong reading survived 1.0
+            # and 0.85 and fell apart at 0.75 - a single dissenting probe
+            # is exactly the evidence that the clip deserves the LLM ear.
+            covs, texts = [], []
+            for rate_name, probe in _probes(clip):
+                try:
+                    segs, _ = _asr.transcribe(
+                        probe, language=job_input.get("language", "he"),
+                        beam_size=8, temperature=[0.0],
+                        condition_on_previous_text=False,
+                        initial_prompt=prompt or None,
+                        vad_filter=False, word_timestamps=False)
+                    txt = " ".join(sg.text for sg in segs)
+                except Exception:
+                    continue
+                n_probe, t = norm(txt), norm(a_txt)
+                m = SequenceMatcher(a=n_probe, b=t, autojunk=False)
+                c = (sum(bl.size for bl in m.get_matching_blocks())
+                     / len(t)) if t else 0.0
+                covs.append(c)
+                texts.append(f"{rate_name}:{txt.strip()}")
+            d["referee"] = " | ".join(texts)[:160]
+            if covs and all(c >= 0.7 for c in covs):
+                d["resolved"] = "primary-confirmed"
+                stats["confirmed"] += 1
+            else:
+                d["resolved"] = "unresolved"
+                stats["unresolved"] += 1
+            continue
+
         # Decode the ladder; keep the reading whose hypothesis coverage
         # separates most decisively. A rate that garbles produces text
         # matching neither hypothesis and loses the argmax automatically.
@@ -704,6 +799,15 @@ def handler(job):
                     label_a=WHISPER_MODEL.split("/")[-1],
                     label_b=VERIFY_MODEL.split("/")[-1],
                     arbitrate=job_input.get("arbitrate", "primary"))
+                # Agreement is not enough when the decoder itself
+                # hesitated: local probability dips inside agreed text
+                # enter the funnel alongside real disputes.
+                hes_count = 0
+                if job_input.get("vote") or job_input.get("rescue"):
+                    hes_count = _flag_hesitations(
+                        rep, job_input,
+                        label_a=WHISPER_MODEL.split("/")[-1],
+                        label_b=VERIFY_MODEL.split("/")[-1])
                 vote_stats = None
                 if job_input.get("vote"):
                     vote_stats = _referee_contested(wav_asr, rep, job_input,
@@ -720,11 +824,14 @@ def handler(job):
                             wav_asr, rep, g_key,
                             model=job_input.get("rescue_model")
                             or rescue_mod.DEFAULT_MODEL,
-                            real_wav_path=wav, tempo=tempo)
+                            real_wav_path=wav, tempo=tempo,
+                            max_regions=job_input.get("rescue_max_regions"))
                     except Exception as exc:
                         rescue_stats = {"error": f"{type(exc).__name__}: {exc}"[:160]}
                 # Working state must not leave the worker.
                 for d in rep.disagreements:
+                    if d.pop("_hesitation", None):
+                        d["hesitation"] = True
                     for k in ("_words_a", "_words_b", "_out_words"):
                         d.pop(k, None)
                 words = rep.words
@@ -734,6 +841,7 @@ def handler(job):
                     "agreed": rep.agreed, "contested": rep.disagreed,
                     "only_primary": rep.only_a, "only_secondary": rep.only_b,
                     "disagreements": rep.disagreements,
+                    "hesitations": hes_count,
                     "notes": rep.notes,
                 }
                 if vote_stats:

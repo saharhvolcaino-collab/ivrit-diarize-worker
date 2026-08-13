@@ -326,14 +326,39 @@ def write_html(t: Transcript, dest: str | Path,
         share[turn.speaker] = share.get(turn.speaker, 0.0) + turn.duration
     total = sum(share.values()) or 1.0
 
+    # Honest uncertainty: a reviewer must see WHICH words to take with a
+    # grain of salt instead of trusting every word equally - the decoder's
+    # own probability is on record for each word, and the flagship failure
+    # was a 0.741 word inside a 0.93-1.0 sentence. Words under the line
+    # get a dotted underline and the probability as a tooltip.
+    lowconf = 0.75
+
+    def _bubble(turn) -> str:
+        toks = rtl(turn.text).split()
+        if turn.words and len(turn.words) == len(toks):
+            spans = []
+            for tok, w in zip(toks, turn.words):
+                p = w.probability
+                if p is not None and p < lowconf:
+                    spans.append(f'<span class="lc" title="ביטחון {p:.2f}">'
+                                 f'{esc(tok)}</span>')
+                else:
+                    spans.append(esc(tok))
+            return " ".join(spans)
+        return esc(rtl(turn.text))
+
     rows = []
+    low_total = 0
     for turn in t.turns:
         side = "a" if order and turn.speaker == order[0] else "b"
         name = esc(label_map.get(turn.speaker, turn.speaker))
+        low_total += sum(1 for w in turn.words
+                         if w.probability is not None
+                         and w.probability < lowconf)
         rows.append(
             f'<div class="msg {side}"><div class="meta">{name} · '
             f'{_clock(turn.start)}</div>'
-            f'<div class="bubble">{esc(rtl(turn.text))}</div></div>'
+            f'<div class="bubble">{_bubble(turn)}</div></div>'
         )
 
     verdict = (quality or {}).get("verdict", "")
@@ -350,6 +375,8 @@ def write_html(t: Transcript, dest: str | Path,
         f"{esc(label_map.get(k, k))}: {100 * v / total:.0f}%"
         for k, v in sorted(share.items(), key=lambda kv: -kv[1])
     )
+    lc_txt = (f' · <span class="lc">{low_total} מילים בביטחון נמוך</span>'
+              if low_total else "")
 
     html = f"""<!doctype html><html dir="rtl" lang="he"><head><meta charset="utf-8">
 <title>{esc(t.source)}</title><style>
@@ -372,10 +399,11 @@ h1 {{ font-size:1.05rem; word-break:break-all }}
 .bubble {{ background:var(--card); padding:.55rem .85rem; border-radius:10px;
   border-inline-start:3px solid var(--a); unicode-bidi:plaintext }}
 .msg.b .bubble {{ border-inline-start:none; border-inline-end:3px solid var(--b) }}
+.lc {{ border-bottom:2px dotted var(--b); cursor:help }}
 </style></head><body><div class="wrap">
 <h1>{esc(t.source)}</h1>
 <div class="sub">{t.duration_sec:.0f} שניות · {len(t.turns)} חילופים · {t.word_count} מילים
- · ביטחון {t.mean_word_confidence:.3f} · {share_txt}</div>
+ · ביטחון {t.mean_word_confidence:.3f} · {share_txt}{lc_txt}</div>
 {q_html}
 {"".join(rows)}
 </div></body></html>"""
