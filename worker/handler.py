@@ -426,21 +426,34 @@ def _flag_hesitations(rep, job_input: dict, label_a: str, label_b: str) -> int:
     if thr <= 0:
         return 0
     neighbour = 0.90
+    # Opening scrutiny. The flagship word's probability wobbles run to run
+    # (0.741, then 0.844) around any single threshold - GPU nondeterminism
+    # moves it. Loosening the gate call-wide costs 115-125 regions
+    # (measured, referee death); loosening it in the first 30 seconds
+    # costs 5-11. And the opening is exactly where the loose gate belongs:
+    # greetings and caller identities live there, the line is at its worst
+    # there, and every failure this file ever produced sits before 0:10.
+    open_sec = float(job_input.get("opening_scrutiny_sec", 30.0))
+    open_thr = float(job_input.get("opening_hesitation_prob", 0.88))
+    open_nb = 0.85
     cap = int(job_input.get("hesitation_cap", 60))
     ws = rep.words
     dips = []
     for i, w in enumerate(ws):
         if not w.get("agreement"):
             continue
+        in_opening = float(w.get("start", 0.0)) <= open_sec
+        w_thr = open_thr if in_opening else thr
+        w_nb = open_nb if in_opening else neighbour
         p = float(w.get("probability") or 1.0)
-        if p >= thr:
+        if p >= w_thr:
             continue
         if len(_re.sub(r"[^\w֐-׿]+", "", w.get("word", ""))) < 2:
             continue
         prv = float(ws[i - 1].get("probability") or 1.0) if i else 1.0
         nxt = (float(ws[i + 1].get("probability") or 1.0)
                if i + 1 < len(ws) else 1.0)
-        if prv >= neighbour and nxt >= neighbour:
+        if prv >= w_nb and nxt >= w_nb:
             dips.append((p, w))
     # Over the cap, keep the deepest dips - they are the likeliest errors.
     dips.sort(key=lambda pw: pw[0])
