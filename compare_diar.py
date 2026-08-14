@@ -99,12 +99,22 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
             num_speakers: int | None = 2, align: str | None = None,
             align_min_score: float = 0.0, verify: bool = False,
             vote: bool = False, level: str = "off",
-            rescue: bool = False, gemini_key: str | None = None) -> dict:
+            rescue: bool = False, gemini_key: str | None = None,
+            studio: bool = True) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n=== {audio.name} ===")
 
     _preflight(audio)
-    prep = prep_mod.preprocess(audio, out_dir, make_opus=True)
+    src = audio
+    if studio:
+        # Every recording goes through the studio before the engines hear
+        # it: floor cleanup, per-syllable liveness, shelf, exciter.
+        # Measured head-to-head on a full call: buried answers 15 -> 12,
+        # the flagship phrase decoded right. See pipeline/studio.py.
+        from pipeline import studio as studio_mod
+        src = studio_mod.master_to(audio, out_dir)
+        print("  studio master: on")
+    prep = prep_mod.preprocess(src, out_dir, make_opus=True)
     blob = base64.b64encode(Path(prep.opus_path).read_bytes()).decode("ascii")
 
     started = time.time()
@@ -267,6 +277,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--align-min-score", type=float, default=0.0,
                    help="only accept alignments at least this confident; "
                         "below it a word keeps the timestamp it already had")
+    p.add_argument("--no-studio", action="store_true",
+                   help="skip the studio master pre-pass (floor cleanup, "
+                        "per-syllable liveness, shelf, exciter) and feed "
+                        "the engines the raw recording")
     args = p.parse_args(argv)
 
     creds = rp.load_credentials()
@@ -282,7 +296,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.align_min_score,
                 args.verify or args.vote or args.rescue,
                 args.vote or args.rescue, args.level,
-                args.rescue, _gemini_key() if args.rescue else None)
+                args.rescue, _gemini_key() if args.rescue else None,
+                studio=not args.no_studio)
         except Exception as exc:
             print(f"  ERROR {Path(item).name}: {exc}")
 

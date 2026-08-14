@@ -440,6 +440,19 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
         start_t = float(rep.words[idxs[0]]["start"])
         end_t = float(rep.words[idxs[-1]]["end"])
         tokens = ans["transcript"].split()
+        # Seam hygiene: the ear re-hears a little context, so its answer
+        # can repeat the agreed word standing just outside the splice
+        # ("מה" + "מה שלומך" read "מה מה שלומך"). An edge token identical
+        # to its neighbour across the seam is the neighbour, not new text.
+        if tokens and idxs[0] > 0 and \
+                _norm(tokens[0]) == _norm(rep.words[idxs[0] - 1]["word"]):
+            tokens = tokens[1:]
+        if tokens and idxs[-1] + 1 < len(rep.words) and \
+                _norm(tokens[-1]) == _norm(rep.words[idxs[-1] + 1]["word"]):
+            tokens = tokens[:-1]
+        if not tokens:
+            stats["rejected"] += 1
+            continue
         step = max((end_t - start_t) / max(len(tokens), 1), 0.05)
         new_words = [{"word": tok,
                       "start": round(start_t + i * step, 3),

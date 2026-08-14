@@ -388,6 +388,9 @@ def _capabilities() -> list[str]:
         ("rescue-failover", lambda: hasattr(__import__(
             "pipeline.rescue", fromlist=["_"]), "FALLBACK_MODELS")),
         ("cache-heal", lambda: True),
+        # v0.27 marker: seam dedup + fuzzy anchor trim + opening scrutiny.
+        ("seam-dedup", lambda: hasattr(__import__(
+            "pipeline.rescue", fromlist=["_"]), "_fuzzy_anchor_trim")),
         ("levelling", lambda: __import__(
             "importlib").util.find_spec("pipeline.levelling") is not None),
         ("msdd", lambda: os.path.exists(
