@@ -176,6 +176,9 @@ def _ask_gemini_once(api_key: str, model: str, prompt: str, audio_b64: str) -> d
     usage = d.get("usageMetadata", {})
     return {"transcript": _DIR_MARKS.sub(
                 "", str(out.get("transcript", ""))).strip(),
+            # The parsed reply as-is, for callers whose schema is not
+            # transcript/confidence (the fluency pass reads turn maps).
+            "_raw": out,
             "confidence": float(out.get("confidence", 0.0)),
             # The API's own meter, so cost reporting is measured consumption
             # rather than an estimate from clip lengths.

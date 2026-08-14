@@ -24,6 +24,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from pipeline import fluent as fluent_mod
 from pipeline import hebrew_polish as polish_mod
 from pipeline import parse as parse_mod
 from pipeline import preprocess as prep_mod
@@ -168,6 +169,7 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
     print(f"  {'engine':12} {'spk':>4} {'turns':>6} {'buried':>7} "
           f"{'domin':>8} {'time':>7}  verdict")
     print("  " + "-" * 62)
+    built: dict[str, tuple] = {}
     for name in ENGINES:
         r = results.get(name)
         if not r:
@@ -229,6 +231,7 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
             parse_mod.write_text(t_obj, eng_dir / f"{audio.stem}.txt")
             parse_mod.write_html(t_obj, eng_dir / f"{audio.stem}.html",
                                  quality=r["quality"])
+            built[name] = (t_obj, r["quality"])
 
     best = min(
         (n for n in results if not results[n].get("meta", {}).get("error")),
@@ -238,6 +241,28 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
     )
     if best:
         print(f"  -> fewest buried answers: {best}")
+
+    # The presentation pass: the winning engine's transcript gets one
+    # audio-grounded LLM polish - fluent sentences, punctuation, and
+    # misheard words fixed against the recording itself. Measured on the
+    # flagship minute: fixed the flagship phrase and the product name in
+    # 6 seconds for under an agora. Only the winner is polished; polishing
+    # three engines would triple the cost for identical words.
+    if rescue and gemini_key and best and best in built:
+        t_obj, q = built[best]
+        try:
+            fstats = fluent_mod.polish(t_obj.turns, str(audio),
+                                       gemini_key)
+            eng_dir = out_dir / best
+            parse_mod.write_text(t_obj, eng_dir / f"{audio.stem}.txt")
+            parse_mod.write_html(t_obj, eng_dir / f"{audio.stem}.html",
+                                 quality=q)
+            print(f"  polish[{best}]: {fstats['polished']} turns improved, "
+                  f"{fstats['errors']} window errors, "
+                  f"{fstats['prompt_tokens']}+{fstats['output_tokens']} tokens")
+        except Exception as exc:
+            print(f"  polish failed (transcript kept as-is): {exc}")
+
     print(f"  {time.time() - started:.0f}s total")
     return results
 
