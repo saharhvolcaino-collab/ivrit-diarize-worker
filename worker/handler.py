@@ -828,6 +828,17 @@ def handler(job):
                 if job_input.get("vote"):
                     vote_stats = _referee_contested(wav_asr, rep, job_input,
                                                     real_wav=wav, tempo=tempo)
+                elif job_input.get("rescue"):
+                    # FAST PATH: no referee. Measured across the whole
+                    # campaign: the referee cost minutes of GPU ladder per
+                    # call and false-confirmed the flagship error three
+                    # separate times, blocking the ear that then proved
+                    # right - the rescue ran hundreds of clips with zero
+                    # errors and heard the phrase correctly even on raw
+                    # clips. Disputes and hesitations go straight to it.
+                    for d in rep.disagreements:
+                        if d.get("_out_words") and not d.get("resolved"):
+                            d["resolved"] = "unresolved"
                 # Gate 3: regions all three of our decodes could not settle
                 # go to a different ear entirely. Runs before the working
                 # state is stripped because the splice needs _out_words.

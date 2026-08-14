@@ -64,7 +64,10 @@ CLIP_POST_SEC = 2.0
 MIN_CONFIDENCE = 0.5
 # Paid-tier pacing. The 2s crawl was the free tier's RPM ceiling; billing
 # raises it far above our queue size, so the spacing drops to a courtesy.
-PACE_SEC = float(os.environ.get("RESCUE_PACE_SEC", "0.25"))
+PACE_SEC = float(os.environ.get("RESCUE_PACE_SEC", "0.15"))
+# Concurrent fetches. In the fast path (no referee) the rescue queue is the
+# wall-clock bottleneck; ten threads on the paid tier stayed 429-free.
+WORKERS = int(os.environ.get("RESCUE_WORKERS", "10"))
 
 _HEB = re.compile(r"[֐-׿]")
 # Directional formatting characters (LRM/RLM, embeddings, isolates, BOM).
@@ -390,7 +393,7 @@ def rescue_unresolved(wav_path: str, rep, api_key: str, *,
             return d, hyps[0], hyps[1], exc, prev_text, next_text
 
     limit = int(max_regions) if max_regions else MAX_REGIONS
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         fetched = list(ex.map(_fetch, todo[:limit]))
 
     for d, hyp_a, hyp_b, ans, prev_text, next_text in fetched:

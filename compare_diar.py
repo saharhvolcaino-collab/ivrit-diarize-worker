@@ -268,9 +268,15 @@ def main(argv: list[str] | None = None) -> int:
                         "recordings are 8-bit with a 20 dB spread between "
                         "parties, which costs the quieter one ~3 bits")
     p.add_argument("--rescue", action="store_true",
-                   help="send regions the referee could not settle to the "
+                   help="send contested and hesitant regions straight to the "
                         "listening LLM (needs GEMINI_API_KEY in .env; "
-                        "implies --vote)")
+                        "implies --verify). FAST PATH: no referee - measured, "
+                        "the referee cost minutes and false-confirmed errors "
+                        "while the LLM ran clean")
+    p.add_argument("--deep", action="store_true",
+                   help="offline quality mode: adds the referee ladder "
+                        "(3 playback rates per region) between the models "
+                        "and the LLM - slower, for reprocessing hard calls")
     p.add_argument("--vote", action="store_true",
                    help="re-decode each contested span with context and let "
                         "that break the tie (implies --verify)")
@@ -280,10 +286,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--align-min-score", type=float, default=0.0,
                    help="only accept alignments at least this confident; "
                         "below it a word keeps the timestamp it already had")
-    p.add_argument("--no-studio", action="store_true",
-                   help="skip the studio master pre-pass (floor cleanup, "
-                        "per-syllable liveness, shelf, exciter) and feed "
-                        "the engines the raw recording")
+    p.add_argument("--studio", action="store_true",
+                   help="master the recording before the engines hear it "
+                        "(floor cleanup, per-syllable liveness, shelf, "
+                        "exciter). Off by default: measured, the blanket "
+                        "master helped the hardest call but dirtied clean "
+                        "ones ('בוקר טוב' -> 'מוצא טוב')")
     args = p.parse_args(argv)
 
     creds = rp.load_credentials()
@@ -297,10 +305,11 @@ def main(argv: list[str] | None = None) -> int:
             summary[Path(item).name] = compare(
                 Path(item), endpoint, creds, out_dir, n, args.align,
                 args.align_min_score,
-                args.verify or args.vote or args.rescue,
-                args.vote or args.rescue, args.level,
-                args.rescue, _gemini_key() if args.rescue else None,
-                studio=not args.no_studio)
+                args.verify or args.vote or args.rescue or args.deep,
+                args.vote or args.deep, args.level,
+                args.rescue or args.deep,
+                _gemini_key() if (args.rescue or args.deep) else None,
+                studio=args.studio)
         except Exception as exc:
             print(f"  ERROR {Path(item).name}: {exc}")
 
