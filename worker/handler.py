@@ -391,6 +391,9 @@ def _capabilities() -> list[str]:
         # v0.27 marker: seam dedup + fuzzy anchor trim + opening scrutiny.
         ("seam-dedup", lambda: hasattr(__import__(
             "pipeline.rescue", fromlist=["_"]), "_fuzzy_anchor_trim")),
+        # v0.29 marker: the full-call protocol lane.
+        ("protocol", lambda: __import__(
+            "importlib").util.find_spec("pipeline.protocol") is not None),
         ("levelling", lambda: __import__(
             "importlib").util.find_spec("pipeline.levelling") is not None),
         ("msdd", lambda: os.path.exists(
@@ -680,6 +683,33 @@ def _referee_contested(wav_path: str, rep, job_input: dict,
     return stats
 
 
+def _maybe_protocol(result: dict, job_input: dict, real_wav: str) -> None:
+    """The protocol lane: one full-call LLM pass, attached to the response.
+
+    Measured five-run matrix: the flagship phrase came back right 5/5 on
+    whole-call listening, 21.6s and ~$0.03 for a 14-minute call at the
+    winning setting (LOW thinking, temperature 0). The ASR skeleton in
+    this same response stays the anchor - the protocol has no word
+    timestamps and is not byte-reproducible between runs.
+    """
+    g_key = os.environ.get("GEMINI_API_KEY") or job_input.get("gemini_key")
+    if not (job_input.get("protocol") and g_key):
+        return
+    from pipeline import protocol as protocol_mod
+    try:
+        out = protocol_mod.transcribe_full_call(
+            real_wav, g_key,
+            model=job_input.get("rescue_model") or None
+            or protocol_mod._r.DEFAULT_MODEL,
+            thinking=job_input.get("protocol_thinking",
+                                   protocol_mod.DEFAULT_THINKING))
+        result["protocol"] = out.pop("text")
+        result["meta"]["protocol"] = out
+    except Exception as exc:
+        result["meta"]["protocol"] = {
+            "error": f"{type(exc).__name__}: {exc}"[:160]}
+
+
 def handler(job):
     started = time.time()
     job_input = job.get("input") or {}
@@ -944,6 +974,7 @@ def handler(job):
                         "meta": v.get("meta") or {"error": v.get("error")}}
                     for k, v in extra.items() if k != lead
                 }
+                _maybe_protocol(result, job_input, wav)
                 result["meta"]["total_sec"] = round(time.time() - started, 2)
                 result["meta"]["capabilities"] = _capabilities()
                 return result
@@ -1013,6 +1044,7 @@ def handler(job):
                     for k, v in extra.items()
                 }
 
+        _maybe_protocol(result, job_input, wav)
         result["meta"]["total_sec"] = round(time.time() - started, 2)
         if result_level_note:
             result["meta"]["levelling"] = result_level_note

@@ -79,6 +79,11 @@ def _submit(blob: str, endpoint: str, creds, engines: list[str],
         "rescue": rescue,
         "gemini_key": gemini_key,
         "rescue_model": "gemini-3-flash-preview",
+        # The protocol lane rides along whenever the LLM key does: one
+        # full-call pass, name-labelled speakers, mm:ss blocks. Measured
+        # 21.6s / ~11 agorot for a 14-minute call at LOW thinking.
+        "protocol": rescue,
+        "protocol_thinking": "LOW",
         "level": level,
     }}
     job = rp._request(f"{API}/{endpoint}/run", creds.api_key, payload)
@@ -162,6 +167,17 @@ def compare(audio: Path, endpoint: str, creds, out_dir: Path,
     caps = (out.get("meta") or {}).get("capabilities")
     if caps:
         print(f"  worker has: {', '.join(caps)}")
+    proto = out.get("protocol")
+    if proto:
+        (out_dir / f"{audio.stem}.protocol.txt").write_text(
+            proto + "\n", encoding="utf-8")
+        pm = (out.get("meta") or {}).get("protocol") or {}
+        print(f"  protocol: {len(proto.split())} words in "
+              f"{pm.get('seconds', '?')}s "
+              f"({pm.get('thinking')}, {pm.get('model', '')})")
+    elif (out.get("meta") or {}).get("protocol", {}).get("error"):
+        print(f"  protocol FAILED: "
+              f"{out['meta']['protocol']['error'][:80]}")
     al = (out.get("meta") or {}).get("alignment")
     if al:
         print(f"  alignment: {al['engine']} moved {al['moved']} words, "
