@@ -30,7 +30,10 @@ from pipeline import preprocess as prep_mod
 from pipeline import runpod_client as rp
 
 API = "https://api.runpod.ai/v2"
-ENGINES = ["ecapa", "sortformer", "msdd", "pyannote"]
+# msdd is out: it never produced a result on this worker (NeMo config key
+# failure per request) and its weights were cut from the image to fit
+# RunPod's 30-minute build limit.
+ENGINES = ["ecapa", "sortformer", "pyannote"]
 
 
 def _preflight(audio: Path) -> None:

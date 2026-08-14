@@ -124,13 +124,11 @@ RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(
 RUN python -c "\
 from pipeline.diarize import _get_encoder; _get_encoder(); import silero_vad; silero_vad.load_silero_vad(); print('ecapa baked')"
 
-# Hebrew CTC alignment model - what whisperX hard-codes for `--language he`.
-# Used to re-time words against the waveform instead of trusting Whisper's
-# attention-based timestamps. Baked because it is ungated and small next to
-# everything else here; whether it actually beats what we have on 8 kHz
-# telephone audio is a measurement, not an assumption - it was trained on
-# clean 16 kHz broadcast speech.
-RUN python -c "from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor; m = 'imvladikon/wav2vec2-xls-r-300m-hebrew'; Wav2Vec2Processor.from_pretrained(m); Wav2Vec2ForCTC.from_pretrained(m); print('hebrew ctc aligner baked')"
+# The Hebrew CTC aligner is no longer baked: measured on this telephony
+# audio it lost to VAD snapping (it was trained on clean 16 kHz broadcast
+# speech), the feature ships off by default, and its 1.2 GB download was
+# build-timeout budget spent on a losing arm. RunPod terminates builds at
+# 1800 s; a cold-cache build with every bake in place ran past it.
 
 # Sortformer: ungated, CC-BY-4.0, one .nemo file. Trained on Fisher / NIST SRE
 # / CALLHOME - 8 kHz telephone upsampled to 16 kHz, which is our exact signal.
@@ -143,26 +141,15 @@ p = hf_hub_download(repo_id='nvidia/diar_streaming_sortformer_4spk-v2', \
 shutil.copy(p, '/opt/nemo_models/sortformer.nemo'); print('sortformer baked')" \
     && rm -rf /root/.cache/huggingface/hub/models--nvidia--diar_streaming_sortformer_4spk-v2
 
-# Post-processing thresholds tuned on CALLHOME (8 kHz telephone), and NVIDIA's
-# telephonic inference preset - five window scales rather than one, so short
-# backchannels survive.
+# Post-processing thresholds tuned on CALLHOME (8 kHz telephone).
 ADD https://raw.githubusercontent.com/NVIDIA-NeMo/NeMo/main/examples/speaker_tasks/diarization/conf/post_processing/diar_streaming_sortformer_4spk-v2_callhome-part1.yaml /opt/nemo_cfg/callhome_pp.yaml
-ADD https://raw.githubusercontent.com/NVIDIA-NeMo/NeMo/main/examples/speaker_tasks/diarization/conf/inference/diar_infer_telephonic.yaml /opt/nemo_cfg/diar_infer_telephonic.yaml
 
-# MSDD's own weights, so the first request does not pay for the download.
-#
-# Deliberately non-fatal. NVIDIA is retiring the clustering diarization stack
-# in favour of Sortformer, so these checkpoints may disappear from NGC without
-# notice. MSDD is a comparison arm, not the product - losing it should cost us
-# the arm, not the whole image. The marker file tells the runtime which is the
-# case, so a missing engine is reported honestly instead of failing per request.
-RUN python -c "\
-import nemo.collections.asr as na; \
-na.models.EncDecSpeakerLabelModel.from_pretrained('titanet_large'); \
-na.models.EncDecClassificationModel.from_pretrained('vad_multilingual_marblenet'); \
-na.models.msdd_models.EncDecDiarLabelModel.from_pretrained('diar_msdd_telephonic'); \
-print('msdd baked')" && touch /opt/nemo_models/msdd.ok \
-    || echo 'MSDD unavailable at build time - engine will report itself missing'
+# MSDD is gone from the image. It never once produced a result here (every
+# request failed on a NeMo config key), NVIDIA is retiring the clustering
+# stack it belongs to, and its three NGC downloads were the slowest part of
+# a build that RunPod now terminates at 1800 s. The capabilities probe keys
+# on the marker file, so without it the engine reports itself missing and
+# clients see an honest absence, not an error.
 
 # pyannote: segmentation first, embeddings only afterwards. Included because
 # that ordering targets the failure we measured - on this audio the gap between
@@ -190,8 +177,6 @@ ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
     ECAPA_DEVICE=cuda \
     SORTFORMER_PATH=/opt/nemo_models/sortformer.nemo \
     SORTFORMER_PP=/opt/nemo_cfg/callhome_pp.yaml \
-    MSDD_CONFIG=/opt/nemo_cfg/diar_infer_telephonic.yaml \
-    MSDD_MARKER=/opt/nemo_models/msdd.ok \
     CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 CMD ["python", "-u", "/app/handler.py"]
