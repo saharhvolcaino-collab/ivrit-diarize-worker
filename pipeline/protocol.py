@@ -35,8 +35,17 @@ from pipeline import rescue as _r
 
 DEFAULT_THINKING = os.environ.get("PROTOCOL_THINKING", "LOW")
 
+# Prompt hardening lines follow Google's own guidance for Gemini-as-ASR
+# (2026-08 support mail): explicit silence handling (this telephony chain
+# is 45% digital zero - prime hallucination fuel), attention to quiet
+# greetings/closings (generative ears skip them), and the one
+# conversation-internal context fact every call centre call shares: the
+# agent opens and introduces themselves. No glossary, no names, no
+# external knowledge - the no-lexicon constraint stands.
 _PROMPT = "\n".join([
     "תמלל את שיחת הטלפון המצורפת - שיחת מוקד שירות בעברית - במלואה, מתחילתה ועד סופה.",
+    "",
+    "הקשר: זו שיחה בין נציג שירות ללקוח. הנציג בדרך כלל פותח את השיחה ומציג את עצמו.",
     "",
     "כללים:",
     "- תמלול נאמן בלבד: אל תוסיף דבר שלא נאמר, אל תתרגם, אל תשפר ניסוחים.",
@@ -45,6 +54,9 @@ _PROMPT = "\n".join([
     "- חלק את התמלול לבלוקים עם חותמת זמן בתחילת כל בלוק בפורמט mm:ss.",
     "- מספרים וספרות: בדיוק כפי שנאמרו.",
     "- פיסוק מלא ותקין.",
+    "- קטע שמכיל רק שקט, נשימות או רעש רקע - אל תפיק עבורו טקסט כלל.",
+    "- שים לב במיוחד לדיבור חלש ולפתיחות וסיומים שקטים (ברכות, פרידות) - "
+    "אל תדלג עליהם.",
     "",
     "החזר טקסט בלבד, ללא הערות וללא JSON.",
 ])
